@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Paper Workflow"
+  short_description: "Manage autonomous research with PI checkpoints"
+  default_prompt: "Use $research-paper-workflow to scout or continue this paper project, keep a durable research ledger, explain major changes plainly, and queue only decisions that need me."
