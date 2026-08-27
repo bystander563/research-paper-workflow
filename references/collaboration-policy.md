@@ -9,6 +9,7 @@ is [workflow.md](workflow.md); the layered retention contract is
 
 The user makes these decisions:
 
+- confirm or change the research compass: venue/submission window and domain;
 - select or change the L1 task-dataset direction and project evidence standard;
 - promote or replace the L2 problem, core mechanism, and innovation claim;
 - change another field explicitly frozen by the user;
@@ -16,8 +17,7 @@ The user makes these decisions:
 - approve a semantic change to stable project instructions when it changes
   authority, scope, protocol, permissions, or required validation and is not
   merely reflecting an already recorded owning decision;
-- enter paper writing, select the headline claim, or choose/change an unfixed
-  venue;
+- enter paper writing or select the headline claim;
 - authorize submission, publication, or an external send.
 
 Everything else is normally autonomous inside the confirmed project scope.
@@ -25,9 +25,11 @@ Metrics, hyperparameters, routine debugging, clear failures, and individual
 candidate methods do not need approval.
 
 Direct user decisions must be captured in the state file even if no queued
-question preceded them. If an existing project has substantial work but lacks
-an L1 or L2 checkpoint, report the missing decision and create the next proper
-checkpoint instead of inferring consent from history.
+question preceded them. If an existing project is still doing active method
+research and lacks L1 or L2, report the missing decision and create the next
+proper checkpoint instead of inferring consent from history. If its task,
+method, experiment package, and manuscript direction are already substantially
+fixed, route downstream without reconstructing retrospective checkpoints.
 
 Every reply is typed as `select`, `approve`, `reject`, `defer`, or
 `informational` internally; do not require the user to write these English
@@ -192,7 +194,7 @@ python scripts/research_queue.py init STATE --project NAME
 python scripts/research_queue.py init STATE --project NAME --phase exploration --venue-or-window "ICASSP" --domain "sMRI" --pi-decision "用户确认投稿目标和领域" --pi-outcome select
 python scripts/research_queue.py audit STATE
 python scripts/research_queue.py agents-audit STATE --cwd PROJECT_SUBDIRECTORY
-python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..."
+python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..." --canonical-source .codex/research/L2/D001.md
 python scripts/research_queue.py question STATE --layer direction --target direction:D001 --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
 python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
 python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"

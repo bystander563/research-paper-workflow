@@ -5,253 +5,176 @@ description: Coordinate paper-oriented problem and dataset scouting, literature-
 
 # Research Paper Workflow
 
-Run routine research work autonomously, but make the user choose the scientific
-direction at explicit checkpoints. Experiments become useful only after the
-task, dataset, scientific gap, and real comparison set are visible.
+Run routine research work autonomously inside a user-confirmed direction. The
+user chooses the scientific direction at explicit checkpoints; elapsed time,
+existing code, or a good result never substitutes for that decision.
 
 Project instructions, `AGENTS.md`, frozen contracts, and the user's latest
-message override this skill. Do not turn one project's data or evaluation
-protocol into a universal rule.
+message override this skill. Do not turn one project's protocol into a universal
+rule.
 
-## At a glance
-
-The shortest operational flow is:
+## Shortest flow
 
 ```text
 user confirms venue/time + domain (+ optional idea)
--> agent scouts task-dataset candidates
--> USER L1 DECISION: task + dataset + project evidence standard
--> agent maps nearest work, external baselines, failure, method, and evidence
--> agent tunes only promising methods to estimate their current-project ceiling
--> USER L2 DECISION: problem + core mechanism + innovation claim
--> agent completes evidence against the L1 standard
--> USER PAPER DECISION: enter writing + headline claim
--> PAPER HANDOFF APPROVED
--> hand off the fixed research package to a submission workflow
+-> scout meaningful task-dataset pairs
+-> USER L1: select task + dataset + project evidence standard
+-> map nearest work, external baselines, failure, method, and evidence
+-> tune only promising methods to estimate their current-project ceiling
+-> USER L2: promote problem + core mechanism + innovation claim
+-> complete the L1 evidence standard
+-> USER PAPER: enter writing + select headline claim
+-> hand off the fixed package to the submission workflow
 ```
 
-Use these files by purpose:
+L1/L2/L3 describe what information is maintained. `discussion`, `exploration`,
+`confirmed_project`, `paper_ready_pending_pi`, and
+`paper_handoff_approved` describe when work happens. Instruction maintenance
+and `PAUSED_FOR_PI` are overlays, not scientific layers or approvals.
 
-| Need | Read or run |
-|---|---|
-| Determine the current phase and next gate | [references/workflow.md](references/workflow.md) |
-| Scout tasks, datasets, papers, baselines, and methods | [references/exploration-policy.md](references/exploration-policy.md) |
-| Handle notifications, unanswered questions, and pause behavior | [references/collaboration-policy.md](references/collaboration-policy.md) |
-| Create or update L1/L2/L3 project state | [references/research-state.md](references/research-state.md) |
-| Audit or change project `AGENTS.md` instructions | [references/agents-maintenance.md](references/agents-maintenance.md) |
-| Initialize, audit, resume, and enforce PI checkpoints | `scripts/research_queue.py` |
+## User authority
 
-## Authority and invariants
+The user decides:
 
-- The user owns the active task-dataset direction, the project-specific evidence
-  standard, promotion or replacement of the scientific story, entry into paper
-  writing, the headline claim, paid compute, and external submission.
-- The agent may generate candidates, inspect data, reproduce baselines, run
-  screens, tune promising methods, repair code, and close low-potential branches
-  within the confirmed direction.
-- Silence or a 20-minute timeout grants no new authority. Record direct user
-  decisions; do not infer approval from existing code or experiments.
-- Give every PI question a stable decision target. `select`, `approve`, and
-  `reject` resolve the question. `informational` adds context but leaves the
-  decision active. `defer` moves it out of the active five-question count into
-  a visible deferred queue and requires a condition for asking again. Only
-  `select` and `approve` can confirm a checkpoint, and a queued approval is
-  bound to one target and consumed once.
-- L1 and L2 are durable scientific state. Keep their current facts, user
-  decisions, replacements, and decision-relevant evidence. They are not
-  chronological dumps of every attempt.
-- L3 is an agent-managed execution layer. Keep, compact, or discard its logs,
-  failed runs, tuning traces, and stop-rule notes according to current utility
-  and project requirements. There is no universal requirement to archive every
-  attempt or stopping rule.
-- If an L3 bug or protocol repair invalidates an L2 result, update L2
-  immediately. Never preserve a scientific conclusion merely because a corrected
-  run is pending.
-- This skill creates no generic test-set, sealed-set, external-label, metric,
-  second-dataset, or unexposed-dataset protocol. Record such requirements in L1
-  only when the user or active project adopts them.
-- Compass, L1, L2, and paper fields have one source of truth in their typed
-  checkpoints. Use `frozen_by_pi` only for additional project-specific choices;
-  never duplicate core fields such as venue, domain, task, dataset, evidence
-  standard, scientific story, or headline claim there.
-- Treat project `AGENTS.md` as a bounded stable contract and router, not another
-  research layer. Keep dynamic L1/L2/L3 content and live controller state out of
-  it. Semantic instruction changes use the existing scoped PI queue; verified
-  mechanical repairs and meaning-preserving compaction are autonomous
-  maintenance with a plain-language notification.
+- confirmation or change of the venue/submission window and research domain;
+- L1 task-dataset direction and its evidence standard;
+- L2 problem, core mechanism, and innovation claim;
+- any additional explicitly frozen project choice;
+- semantic changes to stable project instructions;
+- paid compute or rental;
+- entry into paper writing and the headline claim;
+- external submission, publication, or sending.
 
-## Activate and resume
+The agent may scout candidates, inspect data, reproduce baselines, run cheap
+screens, tune promising methods, repair code, and close low-potential branches
+within the confirmed direction. Metrics, hyperparameters, implementation
+choices, and routine debugging do not need approval. Notify model-family
+changes and any implementation repair that changes scientific meaning.
 
-Ordinary discussion remains analysis-only. Enter execution when the user asks
-to start, continue, run, iterate, or monitor research.
+Silence or a 20-minute timeout grants no authority. Record direct user decisions
+even when no question was queued. A newer decision for the same target
+supersedes every older unconsumed approval.
 
-Before open-ended exploration, obtain a user-confirmed submission window and/or
-target venue plus the research domain. A starting concept is optional and is a
-seed unless the user explicitly freezes it.
+## Core invariants
 
-For a long-running project, run `scripts/research_queue.py audit STATE` before
-resuming. Also run `agents-audit STATE --cwd WORKING_DIRECTORY` when project
-instructions exist, the working directory changed, or no instruction snapshot
-has been recorded. The first audit checks authority, scoped decisions,
-checkpoint links, required evidence references, resumable files, and
-unrecorded instruction changes. The second discovers the effective
-project-local instruction chain and checks its size; it does not rewrite it or
-judge semantic equivalence. Treat any incomplete or legacy checkpoint as
-unresolved even if old code or experiments exist. Do not reconstruct approval
-from chat memory.
+- L1 and L2 are durable, selective scientific state. Preserve current facts,
+  decision-relevant evidence, user decisions, and material replacements—not
+  every attempt.
+- L3 is agent/project-managed. Keep or discard logs, failed runs, tuning traces,
+  and stop notes according to current utility and project rules. Never delete
+  existing artifacts merely because this skill would not have required them.
+- A corrected bug or protocol invalidation must propagate to L2 immediately.
+- Compass, L1, L2, and paper fields have one typed source of truth. Use
+  `frozen_by_pi` only for additional choices.
+- No generic sealed-set, external-label, metric, second-dataset, or unexposed-
+  dataset protocol is created by this skill. Put adopted requirements in L1.
+- External baselines are published methods or conventional comparators, not
+  another dataset. Keep them separate from internal variants.
+- Project checkpoint and assessment records must be project-local. External
+  literature or evidence artifacts may be referenced read-only.
+- `AGENTS.md` is a bounded stable contract and router, not research state.
 
-For an existing project without this state, first classify its maturity. If the
-task, method, main experiment package, and manuscript direction are already
-substantially fixed, route directly to a submission workflow instead of
-recreating L1/L2 around completed work. Otherwise initialize the research state
-and prepare the earliest missing checkpoint.
+## Activate or resume
 
-L1/L2/L3 describe **what information is maintained**. Exploration, confirmed
-project, and paper-ready describe **when work happens**. Do not use a layer name
-as a workflow phase or treat an implementation milestone as a scientific
-approval. Follow the exact transitions in
-[references/workflow.md](references/workflow.md).
+Ordinary discussion is analysis-only. Enter execution when the user asks to
+start, continue, run, iterate, or monitor.
 
-## Mandatory PI checkpoints
+Before open-ended exploration, obtain a user-confirmed venue/submission window
+and domain. An optional idea is a seed unless the user explicitly freezes an
+additional constraint around it.
+
+For an existing state, run `scripts/research_queue.py audit STATE`. Audit the
+relevant project-instruction scope when instructions exist or the working
+directory changed. Instruction audit is compare-only for an existing scope; an
+unrecorded change must be classified and recorded, not accepted by rerunning
+the audit.
+
+If a project has no workflow state, classify it first. Route a substantially
+fixed task, method, experiment package, and manuscript direction directly to a
+submission workflow. For active method research, initialize the earliest
+missing checkpoint; do not infer it from historical experiments.
+
+## PI checkpoints
 
 ### L1 direction
 
-After scouting a small ranked shortlist, ask the user to select the active task
-type and dataset or dataset bundle. The decision packet must also make the
-project evidence standard explicit: competitive target, novelty sufficiency,
-generalization or second-dataset expectation, and what would count as ready to
-consider writing. “Not required” or “decide later” must be a user choice, not an
-agent default.
+Scout a small ranked shortlist. Show task meaning, task-data fit, headroom,
+nearest-work collision risk, external-baseline feasibility, cost, venue/time
+fit, and a recommendation. Ask the user to select the task-dataset pair and set
+the competitive bar, novelty sufficiency, generalization/second-dataset
+expectation, and paper-ready threshold. “Not required” and “decide later” are
+user choices.
 
-Include task meaning, task-data fit, benchmark headroom, nearest-work collision
-risk, external-baseline feasibility, cost, venue/time fit, and the agent's
-recommendation. Cheap inspection and verification may continue while waiting,
-but sustained method search and broad tuning require a confirmed L1 direction.
-
-Changing the confirmed task, dataset, or evidence standard requires another PI
-decision.
-
-The controller requires a structured L1 payload and a durable L1 record. A
-legacy confirmation lacking the evidence-standard fields must be shown to the
-user again; it is not grandfathered into a complete L1 checkpoint.
+Cheap verification may continue while waiting. Sustained method search and
+broad tuning require confirmed L1. Changing L1 requires a new scoped decision.
 
 ### L2 scientific story
 
-Inside the confirmed L1 direction, the agent may derive methods, run cheap
-screens, and tune a promising method to estimate its current-project ceiling.
-After a ceiling summary and external comparison exist, ask whether to promote
-that **problem + core mechanism + innovation claim** into the active paper line,
-keep it exploratory, or close it.
+Inside L1, map current primary literature and real external baselines, diagnose
+one concrete failure, derive a problem-to-intuition-to-mathematics mechanism,
+run a falsifiable screen, and tune only promising candidates. After a ceiling
+summary and external comparison exist, ask whether to promote the problem,
+core mechanism, and innovation claim.
 
-The L2 packet must show nearest work, the observed problem, the problem-to-method
-chain, the strongest defensible external comparison, our result, remaining
-evidence gaps, and the agent's recommendation. The best internal variant does
-not become the scientific story automatically. Replacing a confirmed L2 story
-requires another PI decision.
-
-Record L2 with a typed approving outcome, a durable L2 record, and resolvable
-references to the nearest-work, external-baseline, and result evidence used in
-the decision. A rejected or deferred method remains unconfirmed.
+L2 must link resolvable nearest-work, external-baseline, and result evidence.
+The best internal variant never becomes the story automatically. Changing L2
+requires a new scoped decision.
 
 ### Paper decision
 
-When the confirmed L2 story appears to meet the L1 evidence standard, report the
-narrowest supported claim, strongest matched comparison, remaining objection,
-and necessary versus optional work. Ask whether to enter writing and what the
-headline claim should be. If approved, hand off the fixed L1/L2 evidence package
-to a paper-submission workflow; do not silently start a different scientific
-story during writing.
+When L2 appears to meet L1, create a project-local assessment of every L1
+criterion. Report the narrowest supported claim, strongest matched comparison,
+remaining reviewer objection, and necessary versus optional work. Ask whether
+to enter writing and which headline claim to use. Only a typed paper checkpoint
+may enter `paper_handoff_approved`.
 
-Before asking, create a paper-ready assessment artifact. The controller receipt
-must explicitly assess every L1 evidence criterion and record the narrowest
-claim, strongest matched comparison, remaining objection, and necessary versus
-optional work. Record the exact paper decision as the `paper` checkpoint; only
-then may the controller enter `paper_handoff_approved`.
+## Execution and collaboration
 
-## External-baseline gate
+Before broad ceiling tuning, source-check the external comparison roster and
+ensure a plausible path to competitiveness. Prefer one testable mechanism over
+an engineering-heavy stack. Use available GPU compute by default; use CPU or
+no-GPU mode when requested or required. Never rent paid compute without a user
+decision.
 
-“External baseline” means another published method or conventional comparator,
-not a second or newly collected dataset.
+For a promising method, report its starting and best result, matched-baseline
+gap, stability, cost, weakness, and paper potential in plain language. Close a
+well-checked low-potential branch autonomously and notify only when the closure
+changes project-level interpretation or a confirmed choice.
 
-Before a method receives broad ceiling tuning, identify and source-check the
-baseline roster. Before a result is called paper-worthy, obtain at least the key
-protocol-matched comparison or mark the comparison explicitly blocked. The
-roster should normally include:
+Questions use stable targets. `select`/`approve` authorize the matching target;
+`reject` resolves it; `informational` leaves it active; `defer` moves it to a
+visible deferred queue with a revisit condition. A queued approval is consumed
+once. Notifications never count toward the cap.
 
-- the dataset paper's official reference result or method, when one exists;
-- the strongest recent protocol-comparable published method found for that task;
-- another published method from a meaningfully different mechanism family;
-- a strong simple or conventional baseline;
-- internal variants and ablations, kept separate from external methods.
+Continue independent authorized work while questions are unanswered. At five
+active PI decisions, set `PAUSED_FOR_PI` and stop at the next safe checkpoint.
+Register long-running work that must survive context compaction. The skill does
+not wake, poll, or schedule itself.
 
-Verify task, split, labels, supervision, inference information, metric, and
-evaluation date. Label unmatched published numbers `REPORTED_NOT_MATCHED`.
-Reproduced or adapted comparisons are `OFFICIAL_REPRODUCED` or
-`MATCHED_ADAPTATION`. If a decision-critical method cannot be run or compared,
-record `BLOCKED` or `BASELINE_INCOMPLETE`; do not fill the gap with more internal
-variants.
+## Routing
 
-## Iteration rules
+| Need | Read or run |
+|---|---|
+| Phase transitions and gates | [references/workflow.md](references/workflow.md) |
+| Task/data/literature/baseline/method judgment | [references/exploration-policy.md](references/exploration-policy.md) |
+| Questions, notifications, timeout, pause | [references/collaboration-policy.md](references/collaboration-policy.md) |
+| L1/L2/L3 record content | [references/research-state.md](references/research-state.md) |
+| Project `AGENTS.md` maintenance | [references/agents-maintenance.md](references/agents-maintenance.md) |
+| State, checkpoints, jobs, and audits | `scripts/research_queue.py` |
 
-- Start from an observed problem: plain-language cause, solution intuition,
-  predicted change, minimal mathematical formulation, and minimal
-  implementation. Prefer one testable mechanism over an engineering-heavy stack.
-- Before broad tuning, require a coherent mechanism, a diagnostic moving as
-  predicted, a healthy baseline, and a plausible path to competitiveness.
-- For a promising method, use available compute to estimate its current-project
-  ceiling. Report the starting and best result, external-baseline gap, resource
-  cost, weakness, and paper potential in plain language. A ceiling summary does
-  not require an archive of every tuning attempt or its stopping rule.
-- Close low-potential branches autonomously after implementation, baseline, and
-  diagnostic sanity checks. Notify only when closure changes the project-level
-  interpretation or a confirmed choice.
-- Model-family changes require notification. Routine metrics, hyperparameters,
-  implementation choices, and debugging do not require individual approval.
-- Fix deterministic crashes, ignored arguments, paths, and parsing errors
-  automatically. Exclude invalid output from scientific evidence.
-- Use an available GPU by default. Use CPU or no-GPU mode when requested or
-  required by the environment. Never rent paid compute without a PI decision.
+Read only the references relevant to the current operation. The controller
+checks authority, provenance, path scope, and artifact availability; it does not
+judge scientific adequacy or grant permission.
 
-## Decisions, notifications, and asynchronous work
+## Reporting and handoff
 
-PI decisions include L1 selection or change, L2 promotion or replacement,
-changes to another user-frozen item, paid cost, the paper decision, and external
-submission. Everything else is normally autonomous within project scope.
-
-Important events are notifications rather than questions. Explain them as:
-
-1. 原来想做什么；
-2. 实际发生了什么；
-3. 为什么准备改变；
-4. 接下来做什么。
-
-Send questions as they arise and continue independent authorized work. After 20
-minutes, keep an unanswered question queued and batch it with later questions;
-do not infer consent. A deferred question leaves the active count only after the
-user defers it and a revisit condition is recorded; reopen it when that condition
-is met. At five active unanswered PI decisions, set `PAUSED_FOR_PI` and stop at
-the next safe checkpoint. Do not kill an already-running atomic process unless
-the user requests a hard stop.
-
-Register each active long-running process with its command or session ID, state,
-next poll, and next action. Remove completed job records when no longer useful.
-The Skill bundle does not wake or schedule itself; use the host's active task or
-automation mechanism when work must continue after the current task ends.
-
-## Reporting and downstream handoff
-
-Lead status reports with:
-
-1. active L1 direction, evidence standard, and any L1 decision needed;
-2. active L2 story, external-baseline coverage, and any L2 decision needed;
-3. only the L3 issue that changes L1/L2 meaning.
-
-Separate verified facts, agent interpretations, notifications, questions, and
-confirmed user decisions. Do not make the user reconstruct scientific state
-from run names or call an internally best method competitive.
+Lead with the active L1 direction/evidence standard, active L2 story/external
+comparison, and only the L3 issue that changes their meaning. Separate verified
+facts, agent interpretation, notifications, PI questions, and confirmed user
+decisions. Explain changes as: intended action, actual result, why it matters,
+and next action.
 
 This skill ends at the user-approved paper handoff. Story locking, drafting,
-independent review, revision, compilation, venue-format QA, and submission
-belong to a downstream workflow such as `$paper-submission-orchestrator` when it
-is installed and applicable. The paper decision authorizes that handoff, not an
-arbitrary downstream story packet or external submission.
+review, revision, compilation, venue QA, and submission belong downstream, such
+as `$paper-submission-orchestrator` when applicable. Paper handoff is not
+authorization for external submission.

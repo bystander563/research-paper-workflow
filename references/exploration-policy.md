@@ -169,9 +169,8 @@ If a candidate has no credible potential, stop before broad tuning and move on; 
 For each decision-relevant task-dataset-method candidate, keep a compact L2 card. Do not create cards for every implementation attempt:
 
 ```text
-目标投稿时间/会议：
-领域：
-用户给的初始构想（如有）：
+研究罗盘 checkpoint / reference：
+L1 候选或已确认方向 reference：
 任务为什么有意义：
 任务与数据集为什么匹配：
 数据集为什么还有提升空间：

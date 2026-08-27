@@ -110,6 +110,12 @@ The controller stores hashes, sizes, reasons, and a user-readable notification,
 not instruction contents. It retains only the 20 most recent update receipts
 and counts compacted older receipts.
 
+It keeps a separate snapshot for every audited working-directory scope. A later
+audit of `docs/` therefore cannot erase the baseline for `src/`. Once a scope
+has a snapshot, `agents-audit` is compare-only: if content changed, it exits
+nonzero and leaves all snapshots untouched. Only `agents-record` accepts an
+intentional change after its class and authority have been checked.
+
 ## Change classes and authority
 
 ### Mechanical
@@ -125,6 +131,9 @@ already preserved in a canonical artifact, or move a service-only rule into a
 nested file. The agent may perform this autonomously only after verifying that
 the surviving source exists and the effective meaning is unchanged.
 `agents-record --kind compaction` requires the resulting file to be smaller.
+It also requires one or more `--canonical-source` files and records their hashes;
+"the information exists somewhere" is not sufficient verification. The normal
+control audit reports when a recorded canonical source is no longer available.
 
 ### Semantic
 
@@ -171,7 +180,7 @@ precedence.
 ```powershell
 python scripts/research_queue.py agents-audit STATE --cwd PROJECT_SUBDIRECTORY
 python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind mechanical --reason "..." --summary "..."
-python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..."
+python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..." --canonical-source .codex/research/L2/D001.md
 python scripts/research_queue.py question STATE --layer instructions --target instructions:AGENTS.md --text "..."
 python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome approve
 python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind semantic --reason "..." --summary "..." --decision-id Q001
@@ -179,7 +188,11 @@ python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind sem
 
 For a newly created instruction file, audit its intended directory before
 creation and pass `--before-absent` when recording it. The controller refuses to
-record multiple changed instruction files as one receipt. It also reports an
+record multiple changed instruction files as one receipt. To remove an audited
+instruction file, delete it and record the same path with `--after-absent`;
+creation and deletion cannot be combined in one receipt. A move is therefore
+recorded as one creation and one deletion. The controller refreshes every saved
+scope affected by that file and leaves unrelated scopes unchanged. It also reports an
 unrecorded change through the normal control audit after an instruction snapshot
 exists.
 

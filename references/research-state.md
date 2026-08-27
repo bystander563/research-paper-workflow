@@ -40,9 +40,13 @@ When project writes are authorized, use:
 `research_queue.py init` creates `L1-directions.md` and the `L2/` directory.
 After L1 confirmation it creates `L2/<direction-id>.md` when that file does not
 already exist. It never overwrites an existing scientific record. When a
-checkpoint is confirmed, it appends a compact receipt containing the typed
+checkpoint is confirmed, it refreshes a marked current-state block and appends
+a compact receipt containing the typed
 outcome, user decision, and structured payload to the supplied L1/L2/paper
-record, then stores that record's hash in the controller.
+record, then stores that record's hash in the controller. Checkpoint and
+paper-ready assessment records must stay inside the project. Evidence references
+may point to external files, but the controller reads and hashes them without
+modifying them.
 
 One L2 file belongs to one L1 direction ID. L3 may be a local index, native
 experiment tracker, result cards, handoff, or nothing beyond the artifacts
@@ -60,11 +64,12 @@ they are not L1, L2, L3, or a replacement for the controller. They may tell an
 agent which active L1/L2 files or project truth sources to read, but must not
 copy their changing contents.
 
-The schema-v6 controller stores only the latest project-local instruction-chain
-snapshot plus a bounded set of update receipts containing paths, hashes, sizes,
-change classes, reasons, and decision provenance. It stores no instruction
-contents. See [agents-maintenance.md](agents-maintenance.md) for content,
-budgets, change classes, and authority.
+The schema-v7 controller stores one project-local instruction-chain snapshot per
+audited working-directory scope plus a bounded set of update receipts containing
+paths, hashes, sizes, change classes, canonical compaction sources, reasons, and
+decision provenance. It stores no instruction contents. See
+[agents-maintenance.md](agents-maintenance.md) for content, budgets, change
+classes, and authority.
 
 ## L1: direction portfolio
 
@@ -111,10 +116,10 @@ The L1 decision packet states, in plain language:
 6. the proposed evidence standard;
 7. the recommended direction and why.
 
-Record the exact PI instruction in the queue checkpoint. Code or early results
+Record the exact PI instruction in the controller decision receipt. Code or early results
 do not imply selection.
 
-The schema-v6 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v7 L1 checkpoint separately stores the selected task type, dataset,
 four evidence-standard fields, approving outcome, durable-record path, and the
 record hash at confirmation. A queued approval is also bound to this direction
 ID and consumed once. The hash is provenance for the approved snapshot; L1
@@ -264,7 +269,7 @@ scientific-story checkpoint. Ask whether to promote the problem + core mechanism
 + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v6 L2 checkpoint stores the active direction ID, problem, core
+The schema-v7 L2 checkpoint stores the active direction ID, problem, core
 mechanism, innovation claim, external-baseline status, ceiling summary,
 approving outcome, durable-record path, and hashed references to the nearest-
 work, external-baseline, and result records used for the decision. A queued
@@ -329,11 +334,13 @@ headline claim.
 
 ## Legacy-state audit
 
-Schema-v1/v2/v3/v4/v5 states are readable. Unstructured L1/L2 approvals,
+Schema-v1 through schema-v6 states are readable. Unstructured L1/L2 approvals,
 unscoped decision questions, or schema-v4 L2 checkpoints without evidence
-references are marked for audit and do not satisfy schema-v6 gates. Schema-v5
-scientific checkpoints retain their meaning while receiving an empty
-instruction-maintenance state during migration. Existing scoped approvals
+references are marked for audit and do not satisfy schema-v7 gates. Schema-v5
+scientific checkpoints retain their meaning while receiving an instruction-
+maintenance state during migration. Schema-v6 instruction snapshots migrate to
+the matching scope, and decision questions receive ordered target revisions so
+an older unconsumed approval cannot override a newer decision. Existing scoped approvals
 already linked from a checkpoint are migrated as consumed by that checkpoint;
 do not silently turn an unrelated old summary into new user approval. Run
 `research_queue.py audit STATE` after migration.

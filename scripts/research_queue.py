@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 6
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6}
+SCHEMA_VERSION = 7
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7}
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
 RECENT_INSTRUCTION_UPDATE_LIMIT = 20
@@ -131,7 +131,7 @@ def empty_instruction_maintenance() -> dict[str, Any]:
             "effective_chain_target_bytes": EFFECTIVE_AGENTS_TARGET_BYTES,
             "codex_project_doc_default_bytes": CODEX_PROJECT_DOC_DEFAULT_BYTES,
         },
-        "last_audit": None,
+        "audits_by_scope": {},
         "recent_updates": [],
         "compacted_update_count": 0,
     }
@@ -152,6 +152,7 @@ def initial_state(project: str) -> dict[str, Any]:
         "checkpoint_history": [],
         "paper_ready_assessment": None,
         "macro_questions": [],
+        "decision_target_revisions": {},
         "notifications": [],
         "notification_compacted_count": 0,
         "notification_sequence": 0,
@@ -247,7 +248,36 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
                 science["status"] = "LEGACY_CONFIRMED_NEEDS_AUDIT"
     if version in {1, 2, 3, 4, 5}:
         state.setdefault("instruction_maintenance", empty_instruction_maintenance())
-        state["schema_version"] = SCHEMA_VERSION
+    if version in {1, 2, 3, 4, 5, 6}:
+        maintenance = state.setdefault("instruction_maintenance", empty_instruction_maintenance())
+        audits = maintenance.setdefault("audits_by_scope", {})
+        legacy_audit = maintenance.pop("last_audit", None)
+        if isinstance(legacy_audit, dict):
+            audits[instruction_scope_key(legacy_audit)] = legacy_audit
+
+        revisions: dict[str, int] = {}
+        latest_by_target: dict[str, dict[str, Any]] = {}
+        for question in state.setdefault("macro_questions", []):
+            target = str(question.get("decision_target") or "").strip()
+            if not target:
+                question.setdefault("target_revision", None)
+                question.setdefault("superseded_by", None)
+                continue
+            revisions[target] = revisions.get(target, 0) + 1
+            question["target_revision"] = revisions[target]
+            question["superseded_by"] = None
+            previous = latest_by_target.get(target)
+            if previous is not None and not previous.get("consumed_by"):
+                previous["superseded_by"] = question.get("id")
+            latest_by_target[target] = question
+        state["decision_target_revisions"] = revisions
+        for update in maintenance.setdefault("recent_updates", []):
+            update.setdefault("after_absent", False)
+            if "canonical_sources" not in update:
+                update["canonical_sources"] = []
+                if update.get("kind") == "compaction":
+                    update["legacy_source_unverified"] = True
+    state["schema_version"] = SCHEMA_VERSION
     return state
 
 
@@ -273,6 +303,7 @@ def load_state(path: Path) -> dict[str, Any]:
         "layer_checkpoints": dict,
         "checkpoint_history": list,
         "macro_questions": list,
+        "decision_target_revisions": dict,
         "notifications": list,
         "instruction_maintenance": dict,
         "jobs": list,
@@ -471,25 +502,54 @@ def instruction_snapshot_signature(audit: dict[str, Any]) -> list[tuple[str, str
     )
 
 
-def normalize_record(path: Path, raw: str) -> tuple[Path, str, str]:
+def instruction_scope_key(audit: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "cwd": str(audit.get("scope_cwd") or "."),
+            "fallback": list(audit.get("fallback_filenames") or []),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def normalize_project_record(path: Path, raw: str) -> tuple[Path, str, str]:
     record = Path(raw).expanduser()
     if not record.is_absolute():
-        record = Path.cwd() / record
+        record = project_root_for_state(path) / record
     record = record.resolve()
     if not record.is_file():
         raise SystemExit(f"Checkpoint record does not exist: {record}")
-    project_root = project_root_for_state(path)
+    project_root = project_root_for_state(path).resolve()
     try:
         stored = record.relative_to(project_root).as_posix()
-    except ValueError:
-        stored = str(record)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Checkpoint and assessment records must stay inside {project_root}: {record}"
+        ) from exc
     return record, stored, sha256_file(record)
+
+
+def normalize_readonly_reference(path: Path, raw: str) -> tuple[Path, str, str]:
+    reference = Path(raw).expanduser()
+    if not reference.is_absolute():
+        reference = project_root_for_state(path) / reference
+    reference = reference.resolve()
+    if not reference.is_file():
+        raise SystemExit(f"Evidence reference does not exist: {reference}")
+    project_root = project_root_for_state(path).resolve()
+    try:
+        stored = reference.relative_to(project_root).as_posix()
+    except ValueError:
+        stored = str(reference)
+    return reference, stored, sha256_file(reference)
 
 
 def evidence_reference(state_path: Path, raw: str, label: str) -> dict[str, str]:
     if not str(raw or "").strip():
         raise SystemExit(f"Science confirmation requires --{label.replace('_', '-')}")
-    _, stored, digest = normalize_record(state_path, raw)
+    _, stored, digest = normalize_readonly_reference(state_path, raw)
     return {"path": stored, "sha256_at_confirmation": digest}
 
 
@@ -531,6 +591,62 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         handle.write(receipt)
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    temp = path.with_name(path.name + ".research-paper-workflow.tmp")
+    temp.write_text(text, encoding="utf-8")
+    os.replace(temp, path)
+
+
+def managed_block(name: str, body: str) -> str:
+    return (
+        f"<!-- RPW:{name}:START -->\n"
+        f"{body.rstrip()}\n"
+        f"<!-- RPW:{name}:END -->"
+    )
+
+
+def replace_managed_section(
+    text: str,
+    name: str,
+    body: str,
+    legacy_heading: str,
+) -> str:
+    replacement = managed_block(name, body)
+    start_marker = f"<!-- RPW:{name}:START -->"
+    end_marker = f"<!-- RPW:{name}:END -->"
+    if start_marker in text and end_marker in text:
+        start = text.index(start_marker)
+        end = text.index(end_marker, start) + len(end_marker)
+        return text[:start] + replacement + text[end:]
+
+    heading_at = text.find(legacy_heading)
+    if heading_at < 0:
+        separator = "" if text.endswith("\n\n") else "\n\n"
+        return text + separator + replacement + "\n"
+    next_heading = text.find("\n## ", heading_at + len(legacy_heading))
+    end = len(text) if next_heading < 0 else next_heading + 1
+    suffix = "" if end == len(text) else "\n"
+    return text[:heading_at] + replacement + suffix + text[end:]
+
+
+def replace_science_current_block(text: str, body: str) -> str:
+    name = "SCIENCE_CURRENT"
+    replacement = managed_block(name, body)
+    start_marker = f"<!-- RPW:{name}:START -->"
+    end_marker = f"<!-- RPW:{name}:END -->"
+    if start_marker in text and end_marker in text:
+        start = text.index(start_marker)
+        end = text.index(end_marker, start) + len(end_marker)
+        return text[:start] + replacement + text[end:]
+
+    start = text.find("L2 status:")
+    end_anchor = "Last material update:"
+    end = text.find(end_anchor, start) if start >= 0 else -1
+    if start >= 0 and end >= 0:
+        return text[:start] + replacement + "  \n" + text[end:]
+    return text.rstrip() + "\n\n" + replacement + "\n"
+
+
 def update_record_placeholders(
     record: Path,
     layer: str,
@@ -540,48 +656,49 @@ def update_record_placeholders(
 ) -> None:
     text = record.read_text(encoding="utf-8")
     if layer == "compass":
-        text = text.replace(
-            "- Venue or submission window: UNSET",
-            f"- Venue or submission window: {payload['venue_or_window']}",
-            1,
-        )
-        text = text.replace("- Domain: UNSET", f"- Domain: {payload['domain']}", 1)
-        text = text.replace(
-            "- Optional starting concept: UNSET",
+        text = replace_managed_section(
+            text,
+            "COMPASS_CURRENT",
+            "## Research compass\n\n"
+            f"- Venue or submission window: {payload['venue_or_window']}\n"
+            f"- Domain: {payload['domain']}\n"
             f"- Optional starting concept: {payload['starting_concept']}",
-            1,
+            "## Research compass",
         )
     elif layer == "direction":
         standard = payload["evidence_standard"]
-        replacements = {
-            "- Competitive bar: UNSET": f"- Competitive bar: {standard['competitive_bar']}",
-            "- Novelty sufficiency: UNSET": f"- Novelty sufficiency: {standard['novelty_sufficiency']}",
-            "- Generalization or second-dataset requirement: UNSET": (
-                "- Generalization or second-dataset requirement: "
-                f"{standard['generalization_requirement']}"
-            ),
-            "- Paper-ready threshold: UNSET": (
-                f"- Paper-ready threshold: {standard['paper_ready_threshold']}"
-            ),
-            "## Current PI decision\n\nUNSET": (
-                "## Current PI decision\n\n"
-                f"`{checkpoint_id}`: {source['decision']}"
-            ),
-        }
-        for old, new in replacements.items():
-            text = text.replace(old, new, 1)
+        text = replace_managed_section(
+            text,
+            "DIRECTION_STANDARD_CURRENT",
+            "## Project evidence standard\n\n"
+            f"- Competitive bar: {standard['competitive_bar']}\n"
+            f"- Novelty sufficiency: {standard['novelty_sufficiency']}\n"
+            "- Generalization or second-dataset requirement: "
+            f"{standard['generalization_requirement']}\n"
+            f"- Paper-ready threshold: {standard['paper_ready_threshold']}",
+            "## Project evidence standard",
+        )
+        text = replace_managed_section(
+            text,
+            "DIRECTION_DECISION_CURRENT",
+            "## Current PI decision\n\n"
+            f"- Checkpoint: `{checkpoint_id}`\n"
+            f"- Task type: {payload['task_type']}\n"
+            f"- Dataset: {payload['dataset']}\n"
+            f"- User decision: {source['decision']}",
+            "## Current PI decision",
+        )
     elif layer == "science":
-        text = text.replace(
-            "L2 status: `MAPPING_NEAREST_WORK`",
-            "L2 status: `ACTIVE_PI_CONFIRMED`",
-            1,
+        text = replace_science_current_block(
+            text,
+            "L2 status: `ACTIVE_PI_CONFIRMED`  \n"
+            f"Active checkpoint: `{checkpoint_id}`  \n"
+            f"Problem: {payload['problem']}  \n"
+            f"Core mechanism: {payload['core_mechanism']}  \n"
+            f"Innovation claim: {payload['innovation_claim']}  \n"
+            f"User decision: {source['decision']}",
         )
-        text = text.replace(
-            "Active problem + method decision source: UNSET",
-            f"Active problem + method decision source: {source['decision']}",
-            1,
-        )
-    record.write_text(text, encoding="utf-8")
+    atomic_write_text(record, text)
 
 
 def resolve_stored_path(state_path: Path, raw: str | None) -> Path | None:
@@ -593,6 +710,17 @@ def resolve_stored_path(state_path: Path, raw: str | None) -> Path | None:
     return project_root_for_state(state_path) / candidate
 
 
+def stored_path_is_project_local(state_path: Path, raw: str | None) -> bool:
+    resolved = resolve_stored_path(state_path, raw)
+    if resolved is None:
+        return False
+    try:
+        resolved.resolve().relative_to(project_root_for_state(state_path).resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def ensure_scaffold(state_path: Path, project: str) -> None:
     research_root = research_root_for_state(state_path)
     l2_root = research_root / "L2"
@@ -602,20 +730,26 @@ def ensure_scaffold(state_path: Path, project: str) -> None:
         l1_path.write_text(
             "# Research direction portfolio\n\n"
             f"Project: {project}\n\n"
+            "<!-- RPW:COMPASS_CURRENT:START -->\n"
             "## Research compass\n\n"
             "- Venue or submission window: UNSET\n"
             "- Domain: UNSET\n"
-            "- Optional starting concept: UNSET\n\n"
+            "- Optional starting concept: UNSET\n"
+            "<!-- RPW:COMPASS_CURRENT:END -->\n\n"
+            "<!-- RPW:DIRECTION_STANDARD_CURRENT:START -->\n"
             "## Project evidence standard\n\n"
             "- Competitive bar: UNSET\n"
             "- Novelty sufficiency: UNSET\n"
             "- Generalization or second-dataset requirement: UNSET\n"
-            "- Paper-ready threshold: UNSET\n\n"
+            "- Paper-ready threshold: UNSET\n"
+            "<!-- RPW:DIRECTION_STANDARD_CURRENT:END -->\n\n"
             "## Ranked directions\n\n"
             "| ID | status | task type | dataset | why meaningful | task-data fit | headroom | nearest-work risk | baseline feasibility | cost/time | next action |\n"
             "|---|---|---|---|---|---|---|---|---|---|---|\n\n"
+            "<!-- RPW:DIRECTION_DECISION_CURRENT:START -->\n"
             "## Current PI decision\n\n"
-            "UNSET\n",
+            "UNSET\n"
+            "<!-- RPW:DIRECTION_DECISION_CURRENT:END -->\n",
             encoding="utf-8",
         )
 
@@ -628,8 +762,10 @@ def ensure_l2_scaffold(state_path: Path, direction_id: str, payload: dict[str, A
             f"Direction ID: `{direction_id}`  \n"
             f"L1 task and dataset: {payload['task_type']} | {payload['dataset']}  \n"
             "L1 confirmation source: see workflow state  \n"
+            "<!-- RPW:SCIENCE_CURRENT:START -->\n"
             "L2 status: `MAPPING_NEAREST_WORK`  \n"
-            "Active problem + method decision source: UNSET  \n"
+            "Active problem + method decision source: UNSET\n"
+            "<!-- RPW:SCIENCE_CURRENT:END -->  \n"
             f"Last material update: {now_iso()}\n\n"
             "## Problem-to-method chain\n\nUNSET\n\n"
             "## Nearest work and external baselines\n\nUNSET\n\n"
@@ -795,13 +931,19 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                     "P0",
                     "Paper-ready assessment record is unavailable",
                 )
+            if not stored_path_is_project_local(state_path, assessment.get("path")):
+                add(
+                    "PAPER_READY_ASSESSMENT_OUTSIDE_PROJECT",
+                    "P0",
+                    "Paper-ready assessment must be a project-local durable record",
+                )
     for layer in CHECKPOINT_LAYERS:
         checkpoint = state["layer_checkpoints"].get(layer, {})
         if checkpoint.get("status") == "LEGACY_CONFIRMED_NEEDS_AUDIT":
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v6",
+                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v7",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -812,13 +954,21 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0",
                 f"Confirmed {layer} checkpoint has no available durable record",
             )
+        if checkpoint.get("status") == "CONFIRMED_BY_PI" and not stored_path_is_project_local(
+            state_path, checkpoint.get("record_path")
+        ):
+            add(
+                f"{layer.upper()}_RECORD_OUTSIDE_PROJECT",
+                "P0",
+                f"Confirmed {layer} checkpoint record must stay inside the project",
+            )
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and not checkpoint_complete(
             state, layer
         ):
             add(
                 f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
                 "P0",
-                f"Confirmed {layer} checkpoint lacks required schema-v6 control fields",
+                f"Confirmed {layer} checkpoint lacks required schema-v7 control fields",
             )
         source = checkpoint.get("decision_source") or {}
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and source.get(
@@ -905,12 +1055,32 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 f"Instruction update has invalid kind {kind!r}",
             )
             continue
-        if not update.get("path") or not update.get("after_sha256"):
+        if not update.get("path") or (
+            not update.get("after_absent") and not update.get("after_sha256")
+        ):
             add(
                 "INSTRUCTION_UPDATE_RECEIPT_INCOMPLETE",
                 "P1",
                 "Instruction update receipt lacks its path or resulting hash",
             )
+        if (
+            kind == "compaction"
+            and not update.get("canonical_sources")
+            and not update.get("legacy_source_unverified")
+        ):
+            add(
+                "INSTRUCTION_COMPACTION_SOURCE_MISSING",
+                "P1",
+                f"Instruction compaction for {update.get('path')!r} has no canonical surviving source",
+            )
+        for source in update.get("canonical_sources") or []:
+            source_path = resolve_stored_path(state_path, source.get("path"))
+            if not source_path or not source_path.is_file():
+                add(
+                    "INSTRUCTION_COMPACTION_SOURCE_UNAVAILABLE",
+                    "P1",
+                    f"Canonical source {source.get('path')!r} for instruction compaction is unavailable",
+                )
         if kind == "semantic":
             source = update.get("decision_source") or {}
             if source.get("outcome") not in APPROVING_OUTCOMES:
@@ -939,8 +1109,16 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                         "P0",
                         f"Semantic instruction update for {update.get('path')!r} is not bound to one scoped PI decision",
                     )
-    last_instruction_audit = maintenance.get("last_audit")
-    if isinstance(last_instruction_audit, dict):
+    for scope_key, last_instruction_audit in maintenance.get(
+        "audits_by_scope", {}
+    ).items():
+        if not isinstance(last_instruction_audit, dict):
+            add(
+                "PROJECT_INSTRUCTION_AUDIT_INVALID",
+                "P1",
+                f"Instruction audit entry {scope_key!r} is not structured",
+            )
+            continue
         try:
             current_instruction_audit = analyze_project_instructions(
                 state_path,
@@ -956,8 +1134,24 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 add(
                     "PROJECT_INSTRUCTIONS_CHANGED_SINCE_AUDIT",
                     "P1",
-                    "Project AGENTS instructions changed after the last recorded audit; audit and record the update",
+                    "Project AGENTS instructions changed in scope "
+                    f"{last_instruction_audit.get('scope_cwd')!r}; record the update before resetting any snapshot",
                 )
+    revisions = state.get("decision_target_revisions", {})
+    for question in state.get("macro_questions", []):
+        target = str(question.get("decision_target") or "").strip()
+        if not target:
+            continue
+        revision = int(question.get("target_revision") or 0)
+        latest = int(revisions.get(target, 0))
+        if revision < latest and not question.get("consumed_by") and not question.get(
+            "superseded_by"
+        ):
+            add(
+                "STALE_PI_DECISION_NOT_SUPERSEDED",
+                "P0",
+                f"PI question {question.get('id')} is older than the current decision for {target!r} but remains usable",
+            )
     active_targets: set[str] = set()
     for question in active_questions(state) + deferred_questions(state):
         target = str(question.get("decision_target") or "").strip()
@@ -1062,6 +1256,7 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         if question.get("status") == "ANSWERED"
         and question.get("outcome") in APPROVING_OUTCOMES
         and not question.get("consumed_by")
+        and not question.get("superseded_by")
     ]
     issues = audit_state(state_path, state)
     return {
@@ -1113,10 +1308,13 @@ def cmd_init(args: argparse.Namespace) -> None:
         )
     state = initial_state(args.project)
     ensure_scaffold(path, args.project)
-    state["instruction_maintenance"]["last_audit"] = analyze_project_instructions(path)
+    initial_audit = analyze_project_instructions(path)
+    state["instruction_maintenance"]["audits_by_scope"][
+        instruction_scope_key(initial_audit)
+    ] = initial_audit
     if args.phase == "exploration":
         l1 = research_root_for_state(path) / "L1-directions.md"
-        record, stored, _ = normalize_record(path, str(l1))
+        record, stored, _ = normalize_project_record(path, str(l1))
         payload = {
             "venue_or_window": args.venue_or_window,
             "domain": args.domain,
@@ -1182,11 +1380,23 @@ def cmd_question(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"A {args.layer} question target must start with {args.layer}:"
         )
+    question_id = next_id(state["macro_questions"], "Q")
+    revisions = state.setdefault("decision_target_revisions", {})
+    target_revision = int(revisions.get(target, 0)) + 1
+    for previous in state["macro_questions"]:
+        if (
+            previous.get("decision_target") == target
+            and not previous.get("consumed_by")
+        ):
+            previous["superseded_by"] = question_id
+    revisions[target] = target_revision
     question = {
-        "id": next_id(state["macro_questions"], "Q"),
+        "id": question_id,
         "status": "PENDING_PI",
         "layer": args.layer,
         "decision_target": target,
+        "target_revision": target_revision,
+        "superseded_by": None,
         "text": args.text,
         "priority": args.priority,
         "reason": args.reason,
@@ -1329,6 +1539,54 @@ def append_notification(state: dict[str, Any], text: str) -> dict[str, Any]:
     return notification
 
 
+def current_answered_approval(
+    state: dict[str, Any],
+    decision_id: str,
+    expected_layer: str | None,
+    expected_target: str,
+    purpose: str,
+) -> dict[str, Any]:
+    matches = [q for q in state["macro_questions"] if q.get("id") == decision_id]
+    if not matches:
+        raise SystemExit(f"Decision question not found: {decision_id}")
+    question = matches[0]
+    if question.get("status") != "ANSWERED" or not question.get("decision"):
+        raise SystemExit(f"Decision question is not answered: {decision_id}")
+    if expected_layer is not None and question.get("layer", "other") != expected_layer:
+        raise SystemExit(
+            f"Question {decision_id} belongs to layer "
+            f"{question.get('layer', 'other')!r}, not {expected_layer!r}"
+        )
+    if question.get("decision_target") != expected_target:
+        raise SystemExit(
+            f"Question {decision_id} targets {question.get('decision_target')!r}, "
+            f"not {expected_target!r}"
+        )
+    if question.get("consumed_by"):
+        raise SystemExit(
+            f"Question {decision_id} approval was already consumed by "
+            f"{question.get('consumed_by')}"
+        )
+    if question.get("superseded_by"):
+        raise SystemExit(
+            f"Question {decision_id} was superseded by {question.get('superseded_by')}; "
+            "use the latest PI decision for this target"
+        )
+    latest_revision = int(
+        state.get("decision_target_revisions", {}).get(expected_target, 0)
+    )
+    if int(question.get("target_revision") or 0) != latest_revision:
+        raise SystemExit(
+            f"Question {decision_id} is not the latest PI decision for {expected_target!r}"
+        )
+    if question.get("outcome") not in APPROVING_OUTCOMES:
+        raise SystemExit(
+            f"Question {decision_id} outcome {question.get('outcome')!r} "
+            f"cannot authorize {purpose}"
+        )
+    return question
+
+
 def cmd_notify(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
@@ -1348,28 +1606,13 @@ def instruction_decision_source(
 ) -> dict[str, str]:
     expected_target = f"instructions:{stored_path}"
     if args.decision_id:
-        matches = [q for q in state["macro_questions"] if q.get("id") == args.decision_id]
-        if not matches:
-            raise SystemExit(f"Decision question not found: {args.decision_id}")
-        question = matches[0]
-        if question.get("status") != "ANSWERED" or not question.get("decision"):
-            raise SystemExit(f"Decision question is not answered: {args.decision_id}")
-        if question.get("layer") != "instructions":
-            raise SystemExit(
-                f"Question {args.decision_id} belongs to layer {question.get('layer')!r}, not 'instructions'"
-            )
-        if question.get("decision_target") != expected_target:
-            raise SystemExit(
-                f"Question {args.decision_id} targets {question.get('decision_target')!r}, not {expected_target!r}"
-            )
-        if question.get("consumed_by"):
-            raise SystemExit(
-                f"Question {args.decision_id} approval was already consumed by {question.get('consumed_by')}"
-            )
-        if question.get("outcome") not in APPROVING_OUTCOMES:
-            raise SystemExit(
-                f"Question {args.decision_id} outcome {question.get('outcome')!r} cannot authorize a semantic instruction update"
-            )
+        question = current_answered_approval(
+            state,
+            args.decision_id,
+            "instructions",
+            expected_target,
+            "a semantic instruction update",
+        )
         return {
             "type": "answered_question",
             "question_id": args.decision_id,
@@ -1402,15 +1645,94 @@ def compact_recent_instruction_updates(maintenance: dict[str, Any]) -> None:
         )
 
 
+def audit_covers_target(state_path: Path, audit: dict[str, Any], target: Path) -> bool:
+    project_root = project_root_for_state(state_path).resolve()
+    audited_cwd = (project_root / str(audit.get("scope_cwd") or ".")).resolve()
+    try:
+        audited_cwd.relative_to(target.parent.resolve())
+    except ValueError:
+        return False
+    return target.name in (
+        AGENTS_FILENAMES + tuple(audit.get("fallback_filenames") or [])
+    )
+
+
+def current_instruction_audits(
+    state_path: Path, maintenance: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    current: dict[str, dict[str, Any]] = {}
+    for key, previous in maintenance.get("audits_by_scope", {}).items():
+        if not isinstance(previous, dict):
+            continue
+        current[key] = analyze_project_instructions(
+            state_path,
+            previous.get("scope_cwd"),
+            previous.get("fallback_filenames"),
+        )
+    return current
+
+
+def canonical_source_receipts(
+    state_path: Path, raw_sources: list[str], target: Path
+) -> list[dict[str, Any]]:
+    if not raw_sources:
+        raise SystemExit(
+            "Compaction requires at least one --canonical-source that retains the removed detail"
+        )
+    receipts: list[dict[str, Any]] = []
+    for raw in raw_sources:
+        source, stored, digest = normalize_readonly_reference(state_path, raw)
+        if source == target:
+            raise SystemExit("A compacted instruction file cannot be its own canonical source")
+        receipts.append(
+            {
+                "path": stored,
+                "sha256_at_recording": digest,
+                "bytes": source.stat().st_size,
+            }
+        )
+    return receipts
+
+
 def cmd_agents_audit(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
     audit = analyze_project_instructions(path, args.cwd, args.fallback_name)
-    state["instruction_maintenance"]["last_audit"] = audit
-    save_state(path, state)
+    maintenance = state["instruction_maintenance"]
+    audits = maintenance.setdefault("audits_by_scope", {})
+    key = instruction_scope_key(audit)
+    changed_scopes = []
+    for stored_key, current in current_instruction_audits(path, maintenance).items():
+        previous = audits[stored_key]
+        if instruction_snapshot_signature(current) != instruction_snapshot_signature(
+            previous
+        ):
+            changed_scopes.append(str(previous.get("scope_cwd") or "."))
+    if changed_scopes:
+        print(
+            json.dumps(
+                {
+                    "instruction_audit": audit,
+                    "snapshot_updated": False,
+                    "changed_scopes": sorted(set(changed_scopes)),
+                    "state": state_summary(path, state),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        raise SystemExit(2)
+    bootstrapped = key not in audits
+    if bootstrapped:
+        audits[key] = audit
+        save_state(path, state)
     print(
         json.dumps(
-            {"instruction_audit": audit, "state": state_summary(path, state)},
+            {
+                "instruction_audit": audit,
+                "snapshot_updated": bootstrapped,
+                "state": state_summary(path, state),
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -1423,53 +1745,77 @@ def cmd_agents_record(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
     maintenance = state["instruction_maintenance"]
-    previous_audit = maintenance.get("last_audit")
-    if not isinstance(previous_audit, dict):
+    audits = maintenance.get("audits_by_scope", {})
+    if not audits:
         raise SystemExit("Run agents-audit before editing project instructions")
 
-    target, stored = project_local_path(path, args.path, require_file=True)
-    allowed_names = AGENTS_FILENAMES + tuple(previous_audit.get("fallback_filenames", []))
-    if target.name not in allowed_names:
+    target, stored = project_local_path(
+        path, args.path, require_file=not args.after_absent
+    )
+    if args.before_absent and args.after_absent:
+        raise SystemExit("--before-absent and --after-absent cannot be used together")
+    if args.after_absent and target.exists():
+        raise SystemExit(f"{stored} still exists; remove --after-absent")
+    relevant = {
+        key: previous
+        for key, previous in audits.items()
+        if isinstance(previous, dict) and audit_covers_target(path, previous, target)
+    }
+    if not relevant:
         raise SystemExit(
-            "Instruction maintenance records only discovered AGENTS files or configured fallback names"
+            "No recorded instruction-audit scope covers this file; run agents-audit "
+            "for a working directory at or below its directory before editing"
         )
-    current_audit = analyze_project_instructions(
-        path,
-        previous_audit.get("scope_cwd"),
-        previous_audit.get("fallback_filenames"),
-    )
-    before_by_path = {
-        str(item.get("path")): item for item in previous_audit.get("observed_files", [])
-    }
-    after_by_path = {
-        str(item.get("path")): item for item in current_audit.get("observed_files", [])
-    }
-    changed_paths = sorted(
-        candidate
-        for candidate in set(before_by_path) | set(after_by_path)
-        if (before_by_path.get(candidate) or {}).get("sha256")
-        != (after_by_path.get(candidate) or {}).get("sha256")
-    )
-    if changed_paths != [stored]:
+    current_by_scope = current_instruction_audits(path, maintenance)
+    changed_paths: set[str] = set()
+    for key, previous_audit in audits.items():
+        if not isinstance(previous_audit, dict):
+            continue
+        current_audit = current_by_scope[key]
+        before_all = {
+            str(item.get("path")): item
+            for item in previous_audit.get("observed_files", [])
+        }
+        after_all = {
+            str(item.get("path")): item
+            for item in current_audit.get("observed_files", [])
+        }
+        changed_paths.update(
+            candidate
+            for candidate in set(before_all) | set(after_all)
+            if (before_all.get(candidate) or {}).get("sha256")
+            != (after_all.get(candidate) or {}).get("sha256")
+        )
+    before_entries: list[dict[str, Any]] = []
+    after_entries: list[dict[str, Any]] = []
+    for key, previous_audit in relevant.items():
+        current_audit = current_by_scope[key]
+        before_by_path = {
+            str(item.get("path")): item
+            for item in previous_audit.get("observed_files", [])
+        }
+        after_by_path = {
+            str(item.get("path")): item
+            for item in current_audit.get("observed_files", [])
+        }
+        if stored in before_by_path:
+            before_entries.append(before_by_path[stored])
+        if stored in after_by_path:
+            after_entries.append(after_by_path[stored])
+    if sorted(changed_paths) != [stored]:
         raise SystemExit(
             "Record one instruction-file content change at a time; changed paths are: "
-            + (", ".join(changed_paths) if changed_paths else "none")
+            + (", ".join(sorted(changed_paths)) if changed_paths else "none")
         )
 
-    before = before_by_path.get(stored)
+    before = before_entries[0] if before_entries else None
+    if len({item.get("sha256") for item in before_entries}) > 1:
+        raise SystemExit(f"Stored audit scopes disagree about the previous hash for {stored}")
     if before is None:
         if not args.before_absent:
             raise SystemExit(
                 f"{stored} was absent from the last audit; use --before-absent only for a newly created file"
             )
-        project_root = project_root_for_state(path).resolve()
-        audited_cwd = project_root / str(previous_audit.get("scope_cwd") or ".")
-        try:
-            audited_cwd.resolve().relative_to(target.parent.resolve())
-        except ValueError as exc:
-            raise SystemExit(
-                f"The last audit did not cover the directory containing {stored}"
-            ) from exc
         before_sha = None
         before_bytes = 0
     else:
@@ -1478,13 +1824,33 @@ def cmd_agents_record(args: argparse.Namespace) -> None:
         before_sha = str(before["sha256"])
         before_bytes = int(before["bytes"])
 
-    after = after_by_path[stored]
-    after_sha = str(after["sha256"])
-    after_bytes = int(after["bytes"])
+    after = after_entries[0] if after_entries else None
+    if len({item.get("sha256") for item in after_entries}) > 1:
+        raise SystemExit(f"Current audit scopes disagree about the resulting hash for {stored}")
+    if args.after_absent:
+        if after is not None:
+            raise SystemExit(f"{stored} is still present in the instruction audit")
+        if before is None:
+            raise SystemExit(f"{stored} was absent before and after; there is no deletion to record")
+        after_sha = None
+        after_bytes = 0
+    else:
+        if after is None:
+            raise SystemExit(f"{stored} is absent; use --after-absent for a deletion")
+        after_sha = str(after["sha256"])
+        after_bytes = int(after["bytes"])
     if args.kind == "compaction" and after_bytes >= before_bytes:
         raise SystemExit(
             "A compaction receipt requires the resulting instruction file to be smaller"
         )
+
+    canonical_sources = (
+        canonical_source_receipts(path, args.canonical_source, target)
+        if args.kind == "compaction"
+        else []
+    )
+    if args.canonical_source and args.kind != "compaction":
+        raise SystemExit("--canonical-source is used only with --kind compaction")
 
     if args.kind == "semantic":
         source = instruction_decision_source(state, args, stored)
@@ -1504,6 +1870,8 @@ def cmd_agents_record(args: argparse.Namespace) -> None:
         "before_bytes": before_bytes,
         "after_sha256": after_sha,
         "after_bytes": after_bytes,
+        "after_absent": args.after_absent,
+        "canonical_sources": canonical_sources,
         "decision_source": source,
         "recorded_at": now_iso(),
     }
@@ -1520,7 +1888,8 @@ def cmd_agents_record(args: argparse.Namespace) -> None:
             },
         )
     notification = append_notification(state, f"项目说明维护：{args.summary}")
-    maintenance["last_audit"] = current_audit
+    for key in relevant:
+        audits[key] = current_by_scope[key]
     refresh_pause(state)
     save_state(path, state)
     print(
@@ -1528,7 +1897,7 @@ def cmd_agents_record(args: argparse.Namespace) -> None:
             {
                 "recorded": receipt,
                 "notification": notification,
-                "instruction_audit": current_audit,
+                "instruction_audits": [current_by_scope[key] for key in relevant],
                 "state": state_summary(path, state),
             },
             ensure_ascii=False,
@@ -1564,34 +1933,15 @@ def approving_decision_source(
     state: dict[str, Any], args: argparse.Namespace, layer: str
 ) -> dict[str, str]:
     if args.decision_id:
-        matches = [q for q in state["macro_questions"] if q.get("id") == args.decision_id]
-        if not matches:
-            raise SystemExit(f"Decision question not found: {args.decision_id}")
-        question = matches[0]
-        if question.get("status") != "ANSWERED" or not question.get("decision"):
-            raise SystemExit(f"Decision question is not answered: {args.decision_id}")
-        question_layer = question.get("layer", "other")
-        if question_layer != layer:
-            raise SystemExit(
-                f"Question {args.decision_id} belongs to layer "
-                f"{question_layer!r}, not {layer!r}"
-            )
         expected_target = f"{layer}:{args.id}"
-        if question.get("decision_target") != expected_target:
-            raise SystemExit(
-                f"Question {args.decision_id} targets "
-                f"{question.get('decision_target')!r}, not {expected_target!r}"
-            )
-        if question.get("consumed_by"):
-            raise SystemExit(
-                f"Question {args.decision_id} approval was already consumed by "
-                f"{question.get('consumed_by')}"
-            )
+        question = current_answered_approval(
+            state,
+            args.decision_id,
+            layer,
+            expected_target,
+            "a checkpoint confirmation",
+        )
         outcome = question.get("outcome")
-        if outcome not in APPROVING_OUTCOMES:
-            raise SystemExit(
-                f"Question {args.decision_id} outcome {outcome!r} cannot confirm a checkpoint"
-            )
         return {
             "type": "answered_question",
             "question_id": args.decision_id,
@@ -1727,6 +2077,8 @@ def invalidate_checkpoint(
     previous = state["layer_checkpoints"][layer]
     if previous.get("status") == "UNSET":
         return
+    if str(previous.get("status") or "").startswith("STALE_AFTER_"):
+        return
     state["checkpoint_history"].append(
         {
             "layer": layer,
@@ -1748,7 +2100,7 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     require_execution_active(state, "confirm a scientific checkpoint")
     payload = checkpoint_payload(args, path, state)
     source = approving_decision_source(state, args, args.layer)
-    record, stored, _ = normalize_record(path, args.record)
+    record, stored, _ = normalize_project_record(path, args.record)
     previous = state["layer_checkpoints"][args.layer]
     if (
         previous.get("status") == "CONFIRMED_BY_PI"
@@ -1756,7 +2108,9 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         and previous.get("payload") == payload
     ):
         raise SystemExit(f"Layer is already confirmed to this value: {args.layer}")
-    if previous.get("status") != "UNSET":
+    if previous.get("status") != "UNSET" and not str(
+        previous.get("status") or ""
+    ).startswith("STALE_AFTER_"):
         state["checkpoint_history"].append(
             {
                 "layer": args.layer,
@@ -1842,7 +2196,7 @@ def cmd_phase(args: argparse.Namespace) -> None:
                 "Paper-ready assessment is missing structured fields: "
                 + ", ".join(missing)
             )
-        record, stored, _ = normalize_record(path, args.assessment)
+        record, stored, _ = normalize_project_record(path, args.assessment)
         assessment_payload = {
             "direction_id": state["layer_checkpoints"]["direction"].get("id"),
             "science_id": state["layer_checkpoints"]["science"].get("id"),
@@ -1864,22 +2218,14 @@ def cmd_phase(args: argparse.Namespace) -> None:
 
 def decision_source_for_freeze(state: dict[str, Any], args: argparse.Namespace) -> dict[str, str]:
     if args.decision_id:
-        matches = [q for q in state["macro_questions"] if q.get("id") == args.decision_id]
-        if not matches:
-            raise SystemExit(f"Decision question not found: {args.decision_id}")
-        question = matches[0]
-        if question.get("status") != "ANSWERED" or not question.get("decision"):
-            raise SystemExit(f"Decision question is not answered: {args.decision_id}")
-        if question.get("outcome") not in APPROVING_OUTCOMES:
-            raise SystemExit("A rejected, deferred, or informational answer cannot freeze a field")
         expected_target = f"frozen:{args.key}"
-        if question.get("decision_target") != expected_target:
-            raise SystemExit(
-                f"Question {args.decision_id} targets "
-                f"{question.get('decision_target')!r}, not {expected_target!r}"
-            )
-        if question.get("consumed_by"):
-            raise SystemExit(f"Decision question was already consumed: {args.decision_id}")
+        question = current_answered_approval(
+            state,
+            args.decision_id,
+            None,
+            expected_target,
+            "a frozen-field change",
+        )
         return {
             "type": "answered_question",
             "question_id": args.decision_id,
@@ -2100,7 +2446,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     agents_audit_parser = subparsers.add_parser(
         "agents-audit",
-        help="Audit the project-local AGENTS instruction chain and record a snapshot",
+        help="Compare one project-local AGENTS scope or bootstrap its first snapshot",
     )
     agents_audit_parser.add_argument("state")
     agents_audit_parser.add_argument(
@@ -2131,6 +2477,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--before-absent",
         action="store_true",
         help="Declare that this file did not exist in the immediately preceding audit",
+    )
+    agents_record_parser.add_argument(
+        "--after-absent",
+        action="store_true",
+        help="Declare and record that an audited instruction file was deleted",
+    )
+    agents_record_parser.add_argument(
+        "--canonical-source",
+        action="append",
+        default=[],
+        help="File retaining detail removed by compaction; repeat when needed",
     )
     add_optional_decision_source_args(agents_record_parser)
     agents_record_parser.set_defaults(func=cmd_agents_record)

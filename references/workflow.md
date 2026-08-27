@@ -26,7 +26,9 @@ Use these exact phase names in documentation and `research_queue.py`.
 Run `research_queue.py audit STATE` before resuming any project with workflow
 state. Run `agents-audit STATE --cwd WORKING_DIRECTORY` as well when project
 instructions exist, the working directory changed, or the controller has no
-instruction snapshot. Legacy approvals without the current structured payload
+snapshot for that scope. An existing-scope audit compares against its saved
+snapshot and never accepts changed content; use `agents-record` after classifying
+an intentional change. Legacy approvals without the current structured payload
 or scoped decision receipt are reported as needing audit; existing code and
 results do not waive that decision. Follow
 [agents-maintenance.md](agents-maintenance.md) for instruction content and
@@ -38,7 +40,7 @@ before initializing:
 - active method research -> initialize or bootstrap the earliest missing
   research checkpoint;
 - substantially fixed task, method, experiment package, and manuscript route ->
-  hand off to a submission workflow instead of rebuilding historical L1/L2;
+  hand off to a submission workflow without reconstructing retrospective L1/L2;
 - non-paper work -> do not activate this workflow.
 
 ## Stage 0: discussion -> exploration
@@ -100,7 +102,7 @@ Gate `G1 L1_CONFIRMED`:
 - task type and dataset are explicitly selected by the user;
 - the evidence standard is recorded, including explicit “not required”,
   tentative, or deferred choices where applicable;
-- the exact user decision is linked from L1 and the queue checkpoint;
+- the exact user decision is linked from L1 and its controller decision receipt;
 - the decision outcome is `select` or `approve`, not merely “answered”;
 - a queued approval is scoped to this direction ID and consumed only here;
 - the structured checkpoint contains task, dataset, competitive bar, novelty
@@ -151,7 +153,7 @@ Gate `G2 L2_CONFIRMED`:
 - the controller stores resolvable references to the nearest-work,
   external-baseline, and result records used for the decision;
 - unsupported or blocked comparisons are labeled rather than treated as wins;
-- the exact user decision is linked from L2 and the queue checkpoint.
+- the exact user decision is linked from L2 and its controller decision receipt.
 - the decision outcome is `select` or `approve`; `reject`, `defer`, and
   `informational` cannot pass G2.
 - a queued approval is scoped to this scientific-story ID and consumed only
@@ -185,7 +187,7 @@ Enter `paper_ready_pending_pi` and ask whether to start paper writing and what
 headline claim to use. This is a real user decision even when the agent strongly
 recommends proceeding.
 
-The transition into `paper_ready_pending_pi` requires a durable assessment
+The transition into `paper_ready_pending_pi` requires a project-local durable assessment
 artifact and a structured receipt covering every L1 criterion, the narrowest
 supported claim, strongest matched comparison, remaining objection, and
 necessary versus optional work. It cannot be set at initialization or reached
@@ -243,8 +245,9 @@ not schedule, poll, or terminate the process by itself.
 current phase lacks a complete typed checkpoint, a decision receipt is unscoped
 or incorrectly reused, a core field has conflicting authorities, a required
 evidence reference or durable record is missing, a paper-ready assessment is
-incomplete, a legacy approval needs audit, an audited instruction chain changed
-without a receipt, or an active job cannot be resumed. It verifies provenance
+incomplete, a project checkpoint record is outside the project, a legacy
+approval needs audit, any audited instruction scope changed without a receipt,
+or an active job cannot be resumed. It verifies provenance
 and availability, not scientific adequacy. `agents-audit` separately reports
 instruction precedence and size without treating an oversized file as a
 scientific checkpoint failure. Run the control audit at startup, after
