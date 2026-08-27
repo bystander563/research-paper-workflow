@@ -26,6 +26,7 @@ user confirms venue/time + domain (+ optional idea)
 -> USER L2 DECISION: problem + core mechanism + innovation claim
 -> agent completes evidence against the L1 standard
 -> USER PAPER DECISION: enter writing + headline claim
+-> PAPER HANDOFF APPROVED
 -> hand off the fixed research package to a submission workflow
 ```
 
@@ -37,7 +38,7 @@ Use these files by purpose:
 | Scout tasks, datasets, papers, baselines, and methods | [references/exploration-policy.md](references/exploration-policy.md) |
 | Handle notifications, unanswered questions, and pause behavior | [references/collaboration-policy.md](references/collaboration-policy.md) |
 | Create or update L1/L2/L3 project state | [references/research-state.md](references/research-state.md) |
-| Record PI questions and confirmed checkpoints | `scripts/research_queue.py` |
+| Initialize, audit, resume, and enforce PI checkpoints | `scripts/research_queue.py` |
 
 ## Authority and invariants
 
@@ -49,6 +50,9 @@ Use these files by purpose:
   within the confirmed direction.
 - Silence or a 20-minute timeout grants no new authority. Record direct user
   decisions; do not infer approval from existing code or experiments.
+- An answered question is not automatically an approval. Record `select`,
+  `approve`, `reject`, `defer`, or `informational`; only `select` and `approve`
+  can confirm a checkpoint.
 - L1 and L2 are durable scientific state. Keep their current facts, user
   decisions, replacements, and decision-relevant evidence. They are not
   chronological dumps of every attempt.
@@ -70,9 +74,17 @@ to start, continue, run, iterate, or monitor research.
 
 Before open-ended exploration, obtain a user-confirmed submission window and/or
 target venue plus the research domain. A starting concept is optional and is a
-seed unless the user explicitly freezes it. For a long-running project, resume
-from the durable L1/L2 state and PI queue rather than reconstructing decisions
-from chat memory.
+seed unless the user explicitly freezes it.
+
+For a long-running project, run `scripts/research_queue.py audit STATE` before
+resuming. Treat any incomplete or legacy checkpoint as unresolved even if old
+code or experiments exist. Do not reconstruct approval from chat memory.
+
+For an existing project without this state, first classify its maturity. If the
+task, method, main experiment package, and manuscript direction are already
+substantially fixed, route directly to a submission workflow instead of
+recreating L1/L2 around completed work. Otherwise initialize the research state
+and prepare the earliest missing checkpoint.
 
 L1/L2/L3 describe **what information is maintained**. Exploration, confirmed
 project, and paper-ready describe **when work happens**. Do not use a layer name
@@ -99,6 +111,10 @@ but sustained method search and broad tuning require a confirmed L1 direction.
 Changing the confirmed task, dataset, or evidence standard requires another PI
 decision.
 
+The controller requires a structured L1 payload and a durable L1 record. A
+legacy confirmation lacking the evidence-standard fields must be shown to the
+user again; it is not grandfathered into a complete L1 checkpoint.
+
 ### L2 scientific story
 
 Inside the confirmed L1 direction, the agent may derive methods, run cheap
@@ -113,6 +129,10 @@ evidence gaps, and the agent's recommendation. The best internal variant does
 not become the scientific story automatically. Replacing a confirmed L2 story
 requires another PI decision.
 
+Record L2 with a typed approving outcome and a durable L2 record. A rejected or
+deferred method remains unconfirmed regardless of whether the question was
+answered.
+
 ### Paper decision
 
 When the confirmed L2 story appears to meet the L1 evidence standard, report the
@@ -121,6 +141,10 @@ and necessary versus optional work. Ask whether to enter writing and what the
 headline claim should be. If approved, hand off the fixed L1/L2 evidence package
 to a paper-submission workflow; do not silently start a different scientific
 story during writing.
+
+Before asking, create a paper-ready assessment artifact. Record the exact paper
+decision as the `paper` checkpoint; only then may the controller enter
+`paper_handoff_approved`.
 
 ## External-baseline gate
 
@@ -184,6 +208,11 @@ minutes, keep an unanswered question queued and batch it with later questions;
 do not infer consent. At five unanswered PI decisions, set `PAUSED_FOR_PI` and
 stop at the next safe checkpoint. Do not kill an already-running atomic process
 unless the user requests a hard stop.
+
+Register each active long-running process with its command or session ID, state,
+next poll, and next action. Remove completed job records when no longer useful.
+The Skill bundle does not wake or schedule itself; use the host's active task or
+automation mechanism when work must continue after the current task ends.
 
 ## Reporting and downstream handoff
 

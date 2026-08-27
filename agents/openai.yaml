@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Paper Workflow"
-  short_description: "Gate research direction, evidence, and PI decisions"
-  default_prompt: "Use $research-paper-workflow to scout or continue this paper project. Ask me to confirm L1 task, dataset, and evidence standard, then the L2 problem, core mechanism, and innovation claim. Keep L1/L2 durable, manage L3 retention yourself, compare with real external baselines, and handle routine experiments autonomously."
+  short_description: "Audit research gates, evidence, and PI decisions"
+  default_prompt: "Use $research-paper-workflow to audit or continue this paper project; require typed user approval at the compass, L1, L2, and paper gates, preserve L1/L2, register active jobs, and handle routine research autonomously."

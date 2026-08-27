@@ -2,8 +2,8 @@
 
 Read this reference for research spanning multiple runs, monitoring cycles, or
 context compactions. It defines the durable scientific state, not a chronological
-ledger of all activity. `research_queue.py` separately records PI questions and
-confirmed checkpoints.
+ledger of all activity. `research_queue.py` separately records typed PI
+questions, structured checkpoints, phase state, and resumable active jobs.
 
 ## Retention contract
 
@@ -35,6 +35,13 @@ When project writes are authorized, use:
     D002.md
 <project>/.codex/research-paper-workflow.json
 ```
+
+`research_queue.py init` creates `L1-directions.md` and the `L2/` directory.
+After L1 confirmation it creates `L2/<direction-id>.md` when that file does not
+already exist. It never overwrites an existing scientific record. When a
+checkpoint is confirmed, it appends a compact receipt containing the typed
+outcome, user decision, and structured payload to the supplied L1/L2/paper
+record, then stores that record's hash in the controller.
 
 One L2 file belongs to one L1 direction ID. L3 may be a local index, native
 experiment tracker, result cards, handoff, or nothing beyond the artifacts
@@ -92,6 +99,11 @@ The L1 decision packet states, in plain language:
 
 Record the exact PI instruction in the queue checkpoint. Code or early results
 do not imply selection.
+
+The schema-v4 L1 checkpoint separately stores the selected task type, dataset,
+four evidence-standard fields, approving outcome, durable-record path, and the
+record hash at confirmation. The hash is provenance for the approved snapshot;
+L1 remains a live file and may later change through recorded decisions.
 
 ## L2: scientific story for one direction
 
@@ -237,6 +249,11 @@ scientific-story checkpoint. Ask whether to promote the problem + core mechanism
 + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
+The schema-v4 L2 checkpoint stores the active direction ID, problem, core
+mechanism, innovation claim, external-baseline status, ceiling summary,
+approving outcome, and durable-record path. A question with outcome `reject`,
+`defer`, or `informational` cannot be used as confirmation.
+
 ## L3: implementation and execution
 
 L3 is an optional engineering aid rather than a mandatory archive. When useful,
@@ -250,6 +267,11 @@ Native experiment trackers may replace it. The agent decides the useful level
 of detail, grouping, and retention. Routine hyperparameter trials, resolved
 failures, superseded exploratory runs, protocol-error artifacts, and stopping
 notes may be omitted or removed unless the user or project requires them.
+
+Long-running jobs that must survive context compaction should also be registered
+in the controller with a command or session ID, status, next poll, and next
+action. This job registry is live recovery state and may be pruned after a job
+finishes; it is not a required experiment archive.
 
 Regardless of retention, propagate changes in scientific meaning upward:
 
@@ -274,3 +296,15 @@ question or direct-decision record. Retain material L1/L2 pivots with:
 Keep verified observation, agent interpretation, autonomous action, PI question,
 and confirmed PI decision separate. This trail records scientific ownership; it
 does not require preserving all underlying attempts or stop conditions.
+
+## Legacy-state audit
+
+Schema-v1/v2/v3 states are readable, but their unstructured L1/L2 approvals are
+marked `LEGACY_CONFIRMED_NEEDS_AUDIT`. They do not satisfy schema-v4 gates until
+the user confirms a structured checkpoint containing the now-required fields.
+Run `research_queue.py audit STATE`; do not silently convert an old summary into
+new user approval.
+
+New states retain only a bounded recent notification window. Legacy notification
+history is preserved until `compact-notifications` is explicitly run, so a
+migration does not silently delete existing project material.

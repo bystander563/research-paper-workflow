@@ -26,6 +26,10 @@ question preceded them. If an existing project has substantial work but lacks
 an L1 or L2 checkpoint, report the missing decision and create the next proper
 checkpoint instead of inferring consent from history.
 
+Every answer has one outcome: `select`, `approve`, `reject`, `defer`, or
+`informational`. “Answered” is not an approval state. Only `select` and
+`approve` can confirm a compass, L1, L2, paper, or additional frozen choice.
+
 `FROZEN_BY_PI` is reserved for project-specific choices beyond L1/L2. Include
 only fields the user actually fixed. When work conflicts with one:
 
@@ -57,6 +61,10 @@ Use plain language:
 
 Translate metrics into their consequence. Do not send only run names or
 unexplained abbreviations.
+
+New controller states keep a bounded recent notification window rather than an
+ever-growing history. Legacy histories remain untouched until an explicit
+`compact-notifications` command.
 
 Create a PI question only when the user must choose among materially different
 outcomes. Each question contains:
@@ -103,6 +111,11 @@ When the fifth question is added:
 Resume the underlying phase when the pending count falls below five unless the
 user keeps the workflow paused.
 
+Register long-running active work with `job-add` and update it with `job-update`
+so another context can recover its command/session and next action. The
+controller blocks a new active job while paused but still allows an existing job
+to be marked complete or failed. It does not itself schedule or poll jobs.
+
 ## Execution defaults
 
 Within the current project and authorization:
@@ -145,16 +158,22 @@ layered files from [research-state.md](research-state.md):
 Useful commands:
 
 ```text
-python scripts/research_queue.py init STATE --project NAME --phase exploration
+python scripts/research_queue.py init STATE --project NAME
+python scripts/research_queue.py init STATE --project NAME --phase exploration --venue-or-window "ICASSP" --domain "sMRI" --pi-decision "用户确认投稿目标和领域" --pi-outcome select
+python scripts/research_queue.py audit STATE
 python scripts/research_queue.py question STATE --layer direction --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
-python scripts/research_queue.py answer STATE --id Q001 --decision "..."
-python scripts/research_queue.py confirm STATE --layer direction --id D001 --summary "task=...; dataset=...; evidence_standard=..." --decision-id Q001
-python scripts/research_queue.py confirm STATE --layer science --id S001 --summary "problem=...; mechanism=...; claim=..." --pi-decision "把这个作为主线"
+python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
+python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..."
+python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..."
+python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE
+python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
+python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-action "..."
 python scripts/research_queue.py notify STATE --text "..."
 python scripts/research_queue.py status STATE
 ```
 
-Use `freeze` and `unfreeze` for additional user-fixed fields. Never use
-`--pi-decision` to invent approval; it must quote or faithfully summarize an
-actual user instruction. The helper records decisions and pause state. It does
-not schedule or kill work.
+Use `freeze` and `unfreeze` for additional user-fixed fields. Direct decisions
+also require `--pi-outcome approve|select`. Never use `--pi-decision` to invent
+approval; it must quote or faithfully summarize an actual user instruction.
+The controller records decisions, phase, jobs, and pause state. It does not
+schedule or kill work.

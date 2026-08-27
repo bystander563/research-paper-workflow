@@ -10,17 +10,34 @@ must be true before the next phase.
   material state and user decisions must be retained.
 - **L3 implementation** is an execution layer whose retention is chosen by the
   agent or active project.
-- `DISCUSSION`, `EXPLORATION`, `CONFIRMED_PROJECT`, and
-  `PAPER_READY_PENDING_PI` are temporal workflow phases.
+- `discussion`, `exploration`, `confirmed_project`,
+  `paper_ready_pending_pi`, and `paper_handoff_approved` are temporal workflow
+  phases.
 - `PAUSED_FOR_PI` is a pause status that can overlay an execution phase; it is
   not a scientific stage and does not erase the underlying phase.
 
 Use these exact phase names in documentation and `research_queue.py`.
 
-## Stage 0: DISCUSSION -> EXPLORATION
+## Existing-project intake
+
+Run `research_queue.py audit STATE` before resuming any project with workflow
+state. Schema-v1/v2/v3 approvals without the schema-v4 structured payload are
+reported as needing reconfirmation; existing code and results do not waive that
+decision.
+
+If no workflow state exists, inspect the active project authority and evidence
+before initializing:
+
+- active method research -> initialize or bootstrap the earliest missing
+  research checkpoint;
+- substantially fixed task, method, experiment package, and manuscript route ->
+  hand off to a submission workflow instead of rebuilding historical L1/L2;
+- non-paper work -> do not activate this workflow.
+
+## Stage 0: discussion -> exploration
 
 Ordinary explanation, critique, and idea discussion remain read-only. Enter
-`EXPLORATION` only when the user asks to start, continue, run, iterate, or
+`exploration` only when the user asks to start, continue, run, iterate, or
 monitor research.
 
 Establish the research compass:
@@ -36,7 +53,13 @@ Gate `G0 EXPLORATION_READY`:
 - project instructions and existing state have been located;
 - execution is authorized.
 
-## Stage 1: EXPLORATION -> CONFIRMED_PROJECT
+Initialize in `discussion` by default. Starting directly in `exploration` is
+allowed only when the venue/window, domain, and actual user instruction are
+provided together. Initialization cannot select a later phase. The controller
+creates the L1 file and L2 directory rather than relying on each agent to invent
+its own layout.
+
+## Stage 1: exploration -> confirmed_project
 
 Scout a small ranked set of task-dataset candidates. For each, check:
 
@@ -70,12 +93,15 @@ Gate `G1 L1_CONFIRMED`:
 - the evidence standard is recorded, including explicit “not required”,
   tentative, or deferred choices where applicable;
 - the exact user decision is linked from L1 and the queue checkpoint;
+- the decision outcome is `select` or `approve`, not merely “answered”;
+- the structured checkpoint contains task, dataset, competitive bar, novelty
+  sufficiency, generalization requirement, and paper-ready threshold;
 - no unresolved contradiction exists with another user-frozen field.
 
-Only then enter `CONFIRMED_PROJECT`. Replacing the task, dataset, or adopted
+Only then enter `confirmed_project`. Replacing the task, dataset, or adopted
 evidence standard invalidates G1 and requires another user decision.
 
-## Stage 2: CONFIRMED_PROJECT -> L2 scientific story
+## Stage 2: confirmed_project -> L2 scientific story
 
 Within the confirmed L1 direction:
 
@@ -115,12 +141,14 @@ Gate `G2 L2_CONFIRMED`:
   decision-relevant result evidence;
 - unsupported or blocked comparisons are labeled rather than treated as wins;
 - the exact user decision is linked from L2 and the queue checkpoint.
+- the decision outcome is `select` or `approve`; `reject`, `defer`, and
+  `informational` cannot pass G2.
 
 An implementation win or internally best variant never passes G2 by itself.
 Replacing the confirmed problem, core mechanism, or innovation claim invalidates
 G2 and requires another user decision.
 
-## Stage 3: Evidence completion -> PAPER_READY_PENDING_PI
+## Stage 3: Evidence completion -> paper_ready_pending_pi
 
 Continue experiments inside the confirmed L1/L2 contract. Hyperparameters,
 routine metrics, implementation details, diagnostics, and bug repair remain
@@ -140,16 +168,23 @@ Gate `G3 PAPER_DECISION_READY`:
 - necessary and optional additional work are separated;
 - the package is assessed against every recorded L1 evidence criterion.
 
-Enter `PAPER_READY_PENDING_PI` and ask whether to start paper writing and what
+Enter `paper_ready_pending_pi` and ask whether to start paper writing and what
 headline claim to use. This is a real user decision even when the agent strongly
 recommends proceeding.
 
-If approved, this research workflow ends with the durable L1/L2 package as the
-handoff. Route story locking, drafting, review, revision, compilation, venue QA,
-and submission to a downstream paper-submission workflow. If declined, continue
-only within the confirmed research direction or obtain the needed L1/L2 change.
-Approval to enter writing does not approve an arbitrary later story packet or
-submission action; downstream approval gates remain separate.
+The transition into `paper_ready_pending_pi` requires a durable assessment
+artifact. It cannot be set at initialization or reached without complete typed
+L1/L2 checkpoints.
+
+If approved, record a typed `paper` checkpoint containing the confirmed science
+checkpoint, headline claim, durable record, and handoff target. Only then enter
+`paper_handoff_approved`. This research workflow ends with the durable L1/L2
+package as the handoff. Route story locking, drafting, review, revision,
+compilation, venue QA, and submission to a downstream paper-submission workflow.
+If declined or deferred, continue only within the confirmed research direction
+or obtain the needed L1/L2 change. Approval to enter writing does not approve an
+arbitrary later story packet or submission action; downstream approval gates
+remain separate.
 
 ## Pause overlay: PAUSED_FOR_PI
 
@@ -166,3 +201,28 @@ At five unanswered PI decisions:
 Resume the underlying phase when the unanswered count falls below five unless
 the user asks to remain paused. A 20-minute timeout only batches questions; it
 never passes a gate.
+
+The controller rejects phase advancement and new active-job registration while
+paused. Answering questions, recording notifications, and marking already
+running jobs complete remain allowed.
+
+## Active-job recovery
+
+Register every long-running process that must survive context compaction with:
+
+- stable job ID and plain-language purpose;
+- reproducible command and/or terminal/session ID;
+- `queued` or `running` state;
+- next poll time and next action.
+
+Update it to `completed`, `failed`, `blocked`, or `cancelled` when appropriate,
+then remove the record when it no longer helps recovery. This is a live L3
+index, not a mandatory run archive. The controller records resumability; it does
+not schedule, poll, or terminate the process by itself.
+
+## Control audit
+
+`research_queue.py audit STATE` fails when the current phase lacks a complete
+typed checkpoint, a durable record is missing, a paper-ready assessment is
+absent, a legacy approval needs reconfirmation, or an active job cannot be
+resumed. Run it at startup, after migration, and before paper handoff.
