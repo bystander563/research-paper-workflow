@@ -52,7 +52,7 @@ Reject or narrow a task when the dataset supplies only a proxy label that cannot
 
 Do not require a second, new, external, sealed, or previously unexposed dataset by default. If current data limit the strength of a generalization claim, report that limitation and the optional value of additional data; the user decides whether obtaining such data becomes a project requirement.
 
-Keep a small ranked L1 shortlist rather than silently choosing one pair. Once meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and cost are known well enough to compare the candidates, ask the user to select the active task-dataset direction. Cheap inspection and feasibility work may precede this choice; sustained method search and broad tuning may not.
+Keep a small ranked L1 shortlist rather than silently choosing one pair. Once meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and cost are known well enough to compare the candidates, ask the user to select the active task-dataset direction and project evidence standard. The standard covers the competitive target, novelty sufficiency, generalization or second-dataset expectation, and paper-decision threshold. Cheap inspection and feasibility work may precede this choice; sustained method search and broad tuning may not.
 
 ## Prefer useful headroom over saturated benchmarks
 
@@ -85,11 +85,13 @@ Novelty is not “this exact module combination was not found.” Require a mean
 
 Actively search for alternative names for the same idea. If the nearest work already implements the same mechanism under different terminology, reject the novelty claim or redefine the problem honestly.
 
+Use established field terms from primary literature, benchmark definitions, or other authoritative sources. Do not turn an internal nickname into a scientific concept or carry a novelty claim by renaming a known failure or mechanism. A provisional method name is acceptable only when the underlying difference is already substantive.
+
 ## Establish external comparisons before multiplying methods
 
 Nearest work and experimental baselines overlap but are not identical. A paper may be crucial for novelty even when it cannot be run, while a simple baseline may be essential experimentally without being the nearest conceptual work. Record both roles.
 
-Before calling a method promising or giving it a broad tuning budget, create a baseline roster from primary sources. It should normally include:
+Before calling a method promising or giving it a broad tuning budget, identify and source-check a baseline roster from primary sources. Local reproduction of every item need not already be complete. The roster should normally include:
 
 - the dataset paper's official reference result or method when available;
 - the strongest recent protocol-comparable published method found for the task and dataset;
@@ -99,7 +101,7 @@ Before calling a method promising or giving it a broad tuning budget, create a b
 
 Verify task, prediction unit, dataset version, split, supervision, information available at inference, metric definition, and evaluation date. A larger published number under a different protocol is historical context, not an apples-to-apples winner. Label it `REPORTED_NOT_MATCHED`; reproduce or adapt decision-critical baselines under the current protocol when feasible.
 
-If the current result table contains only our own methods, the scientific comparison is incomplete regardless of how many internal variants were tried. Prioritize external comparison work before generating more variants. When a key implementation is unavailable or too costly, record the exact blocker and the weakest defensible claim that remains.
+If the current result table contains only our own methods, the scientific comparison is incomplete regardless of how many internal variants were tried. Prioritize external comparison work before generating more variants. Before calling a result paper-worthy, obtain at least the key protocol-matched comparison. When a key implementation is unavailable or too costly, record the exact blocker and the weakest defensible claim that remains.
 
 ## Derive the method from the problem
 
@@ -142,7 +144,7 @@ Treat a candidate as promising when most of the following hold:
 
 In addition, the baseline roster must exist and expose a plausible route to competitiveness. A candidate can remain in `METHOD_CHEAP_SCREEN` while external baselines are being verified, but it cannot be called paper-worthy from internal comparisons alone.
 
-For a promising candidate, choose a project-appropriate ceiling-search budget based on the venue timeline, available compute, and the number of viable alternatives. Tune hyperparameters and other permitted implementation choices using available compute, including an existing GPU by default. Continue until results saturate, gains show clear diminishing returns, the budget is reached, or the candidate loses its promise. Record why the ceiling search stopped. The resulting "ceiling" is the best observed development-side result under the current project contract, not a universal upper bound or proof of generalization.
+For a promising candidate, choose a project-appropriate ceiling-search budget based on the venue timeline, available compute, and the number of viable alternatives. Tune hyperparameters and other permitted implementation choices using available compute, including an existing GPU by default. Continue until results saturate, gains show clear diminishing returns, the budget is reached, or the candidate loses its promise. The resulting "ceiling" is the best observed development-side result under the current project contract, not a universal upper bound or proof of generalization. Report the decision-relevant summary; do not require an archive of every attempt or the stopping rule.
 
 After the ceiling report and external comparison exist, ask the user whether this problem + core mechanism + innovation claim should become the active L2 scientific story. The tuning itself does not silently make that decision.
 
@@ -160,7 +162,7 @@ If a candidate has no credible potential, stop before broad tuning and move on; 
 
 ## Candidate card
 
-For each serious task-dataset-method candidate, keep a compact card:
+For each decision-relevant task-dataset-method candidate, keep a compact L2 card. Do not create cards for every implementation attempt:
 
 ```text
 目标投稿时间/会议：
@@ -179,7 +181,7 @@ For each serious task-dataset-method candidate, keep a compact card:
 候选创新点及与近邻工作的差异：
 第一个可证伪实验：
 潜力筛选状态与证据：
-调参起点、当前最好结果与停止原因（如适用）：
+调参起点、当前最好结果与证据摘要（如适用）：
 我们的结果与外部 baseline 差距：
 L1 方向决策来源：
 L2 科学主线决策来源（如已确认）：
@@ -187,7 +189,7 @@ L2 科学主线决策来源（如已确认）：
 预计时间和算力：
 ```
 
-Keep a small ranked set of candidates rather than a long idea dump. A candidate may enter cheap data or baseline feasibility testing when the pair is plausible; sustained method work starts only after the user confirms L1. A promising method may be tuned autonomously, but becomes the active L2 story only after the user confirms the problem, mechanism, and innovation claim.
+Keep a small ranked set of candidates rather than a long idea dump. A candidate may enter cheap data or baseline feasibility testing when the pair is plausible; sustained method work starts only after the user confirms L1. A promising method may be tuned autonomously, but becomes the active L2 story only after the user confirms the problem, mechanism, and innovation claim. Preserve L2 cards that received a user decision or materially support the active scientific interpretation; L3 trial detail remains discretionary.
 
 ## Downstream decision rule
 
