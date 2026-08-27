@@ -7,7 +7,7 @@ description: Coordinate paper-oriented problem and dataset scouting, literature-
 
 Run routine research work autonomously, but make the user choose the scientific direction at explicit checkpoints. A large number of experiments is useful only after the task, dataset, scientific gap, and comparison set are visible.
 
-Project instructions, `AGENTS.md`, frozen contracts, and the user's latest message override this skill. Do not turn one project's protocol into a universal rule. In particular, this skill does not create generic rules for test sets, sealed sets, external labels, intermediate-result access, metrics, or validation protocols.
+Project instructions, `AGENTS.md`, frozen contracts, and the user's latest message override this skill. Do not turn one project's protocol into a universal rule. In particular, this skill does not create generic rules for test sets, sealed sets, external labels, intermediate-result access, metrics, or validation protocols. It does not require a second, new, or previously unexposed dataset unless the user or active project explicitly makes that part of the evidence standard.
 
 ## Activate the workflow
 
@@ -45,7 +45,7 @@ Record the user's choice as the L2 decision. Replacing the confirmed problem, co
 
 ### Paper checkpoint
 
-If the confirmed L2 story appears to meet the project's paper-ready criteria, ask whether to enter writing and what the headline claim should be. Ask about venue only when it is tentative, must change, or no longer fits.
+If the confirmed L2 story appears to meet the project's paper-ready criteria, ask whether to enter writing and what the headline claim should be. Ask about venue only when it is tentative, must change, or no longer fits. Do not block this checkpoint solely because no previously unexposed dataset was found unless that requirement was explicitly confirmed for the project.
 
 ## External-baseline gate
 
@@ -93,11 +93,15 @@ When the method is easy to misunderstand, add one concrete sample-level example.
 
 - Screen candidates before broad tuning. A coherent mechanism, a diagnostic moving as predicted, baseline health, and a plausible competitive path are needed before `PROMISING`.
 - For a promising method, use available compute to estimate its current-project ceiling, then report the start, best result, external-baseline gap, cost, weakness, and paper potential in plain language.
-- Close low-potential methods autonomously after implementation and baseline sanity checks. Record the reason in L2/L3; notify only when the closure changes the project-level interpretation or a confirmed choice.
+- Close low-potential methods autonomously after implementation and baseline sanity checks. No individual negative-result record is required; notify only when the closure changes the project-level interpretation or a confirmed choice.
 - Model-family changes require notification. Metric, ordinary implementation, and hyperparameter changes need no individual notification; record them in L3 and summarize material effects upward.
-- Lowering or replacing a non-frozen gate is autonomous, but preserve the old failure and create a new version. Never rewrite an old run as a pass.
-- Fix deterministic crashes, ignored arguments, paths, and parsing errors automatically. Preserve invalid outputs as `PROTOCOL_ERROR`. Propagate any invalidated L2 result upward.
+- Lowering or replacing a non-frozen gate is autonomous. Apply the new gate to new or explicitly re-evaluated runs; do not describe an old run as having passed a gate it was not evaluated under.
+- Fix deterministic crashes, ignored arguments, paths, and parsing errors automatically. Exclude invalid outputs from scientific evidence and propagate any invalidated L2 result upward.
 - Use an available GPU by default. Use CPU or no-GPU mode when requested or required by the environment. Never rent paid compute without a PI decision.
+
+## Negative-result retention
+
+This skill does not require a negative-result ledger. Routine failed trials, low-potential candidates, rejected exploratory branches, superseded gate results, and protocol-error artifacts may be omitted or discarded once they are no longer needed for current work. Retain them only when the user or active project explicitly requires it. This default change does not authorize deleting existing project artifacts.
 
 ## Twenty-minute asynchronous policy
 

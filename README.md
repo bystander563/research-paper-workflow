@@ -17,12 +17,13 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 - avoids engineering-heavy module stacks without a coherent mechanism;
 - uses existing GPU compute by default and never rents paid compute without approval;
 - tunes only candidates with credible potential and reports their observed ceiling plainly;
-- keeps low-potential candidates in an internal negative-results ledger;
+- does not require a negative-results ledger for failed trials or closed exploratory candidates;
+- does not require a second, new, or previously unexposed dataset unless the user or project adopts that evidence standard;
 - continues independent work while PI questions are unanswered;
 - pauses when five genuine PI decisions are pending;
 - protects frozen choices from silent replacement and preserves their history.
 
-The skill intentionally does not impose universal test-set, sealed-set, external-label, metric, or validation protocols. Those remain project-specific.
+The skill intentionally does not impose universal test-set, sealed-set, external-label, metric, validation, second-dataset, or unexposed-dataset protocols. Those remain project-specific.
 
 ## Install
 

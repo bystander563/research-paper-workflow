@@ -4,7 +4,7 @@ Read this reference for long-running research execution, especially when the use
 
 ## Scope
 
-This policy governs collaboration state. It does not define a domain's test-set, sealed-set, external-label, metric, or validation protocol. Read those from the active project.
+This policy governs collaboration state. It does not define a domain's test-set, sealed-set, external-label, metric, validation, second-dataset, or unexposed-dataset protocol. Read those from the active project. A new or previously unexposed dataset is not a universal requirement.
 
 ## State model
 
@@ -103,7 +103,7 @@ The 20-minute window batches questions; it grants no authority and does not inst
 4. After 20 minutes, keep an unanswered PI question queued and batch later PI questions with it.
 5. Never take the dependent action merely because time elapsed.
 
-If the user rejects a provisional branch, preserve its evidence as `PI_REJECTED_BRANCH` and exclude it from the active claim unless restored.
+If the user rejects a provisional branch, stop using it in the active claim. No retained branch record is required unless the user or project asks for one.
 
 ## Five-question stop
 
@@ -129,8 +129,8 @@ Within the current project and authorization:
 - close low-potential methods after implementation, baseline, and diagnostic sanity checks;
 - notify model-family changes;
 - keep routine metrics and hyperparameters in L3;
-- version non-frozen gate changes and preserve old verdicts;
-- retain enough configuration, result, failure, and artifact evidence to understand negative results and `PROTOCOL_ERROR`.
+- apply changed non-frozen gates prospectively or by explicit re-evaluation rather than relabeling old runs;
+- keep no default negative-result ledger; failed trials, rejected branches, superseded verdicts, and protocol-error artifacts may be discarded unless the user or project requires retention.
 
 ## Paper-ready transition
 
@@ -143,6 +143,8 @@ Treat “good enough to write” as a PI decision. It requires a confirmed L1 di
 - plausible paper positions.
 
 While waiting, verify artifacts and organize evidence. Do not silently choose the final claim or title.
+
+The agent may explain that using only previously explored data limits the strength of a generalization or confirmation claim, but it must not convert that limitation into a mandatory search for a new or unexposed dataset. Such a requirement exists only when the user or project explicitly adopts it.
 
 ## Durable state
 

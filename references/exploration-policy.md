@@ -50,6 +50,8 @@ A dataset is promising for that task when:
 
 Reject or narrow a task when the dataset supplies only a proxy label that cannot support the claim.
 
+Do not require a second, new, external, sealed, or previously unexposed dataset by default. If current data limit the strength of a generalization claim, report that limitation and the optional value of additional data; the user decides whether obtaining such data becomes a project requirement.
+
 Keep a small ranked L1 shortlist rather than silently choosing one pair. Once meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and cost are known well enough to compare the candidates, ask the user to select the active task-dataset direction. Cheap inspection and feasibility work may precede this choice; sustained method search and broad tuning may not.
 
 ## Prefer useful headroom over saturated benchmarks
@@ -154,7 +156,7 @@ Report a ceiling search to the user in plain language with:
 6. stability, failure cases, and remaining weaknesses;
 7. compute cost, estimated ceiling, and whether the evidence now looks paper-worthy.
 
-If a candidate has no credible potential, stop before broad tuning and record a short internal reason. Do not send an individual report merely to enumerate weak candidates. Surface the failure only when it changes the research compass, exhausts or materially narrows the candidate pool, invalidates a serious premise, or affects an item marked `FROZEN_BY_PI`.
+If a candidate has no credible potential, stop before broad tuning and move on; no individual negative-result record is required. Surface the failure only when it changes the research compass, exhausts or materially narrows the candidate pool, invalidates a serious premise, or affects an item marked `FROZEN_BY_PI`.
 
 ## Candidate card
 
@@ -177,7 +179,6 @@ For each serious task-dataset-method candidate, keep a compact card:
 候选创新点及与近邻工作的差异：
 第一个可证伪实验：
 潜力筛选状态与证据：
-低潜力关闭原因（如适用）：
 调参起点、当前最好结果与停止原因（如适用）：
 我们的结果与外部 baseline 差距：
 L1 方向决策来源：

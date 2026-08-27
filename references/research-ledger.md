@@ -83,9 +83,9 @@ Use these L2 statuses:
 - `CEILING_SEARCH`
 - `PENDING_PI_SCIENCE`
 - `ACTIVE_PI_CONFIRMED`
-- `CLOSED_LOW_POTENTIAL`
-- `CLOSED_NEAREST_WORK`
 - `PAPER_READY_PENDING_PI`
+
+Closed low-potential or nearest-work-collided candidates may be removed from the live L2 file. This skill does not require an archive of closed candidates.
 
 ### Problem-to-method chain
 
@@ -164,10 +164,8 @@ An “ours versus ours” table may diagnose the mechanism, but it cannot satisf
 Maintain a small method table:
 
 ```text
-method ID | status | mechanism | predicted diagnostic | cheap-screen evidence | external-baseline gap | best result | closure or next action
+method ID | status | mechanism | predicted diagnostic | cheap-screen evidence | external-baseline gap | best result | next action
 ```
-
-Before `CLOSED_LOW_POTENTIAL`, record the implementation sanity check, baseline health check, mechanism diagnostic, and short closure reason.
 
 For each promising method that receives tuning, record:
 
@@ -201,6 +199,8 @@ Use statuses such as:
 
 Group routine hyperparameter trials. Link to native logs rather than pasting them. Bugs and repairs are autonomous unless they require changing L1/L2 or another frozen item.
 
+The L3 index tracks current execution state, not a mandatory failure archive. Resolved failed runs, superseded exploratory runs, and protocol-error artifacts may be removed unless the user or project requires retention.
+
 Propagate upward when L3 changes scientific meaning:
 
 - invalidate affected L2 result rows when a bug changes their support;
@@ -219,4 +219,4 @@ The queue is the authority for current PI decisions. L1/L2 should link to the re
 - whether the change is scientific or engineering;
 - the next independent action.
 
-Keep verified observation, agent interpretation, autonomous action, PI question, and confirmed PI decision separate. Never rewrite a failed result as a pass after changing a gate; add a new version and preserve the previous verdict.
+Keep verified observation, agent interpretation, autonomous action, PI question, and confirmed PI decision separate. Do not describe a failed result as a pass under a gate it was not evaluated against; retaining the superseded run is not required.
