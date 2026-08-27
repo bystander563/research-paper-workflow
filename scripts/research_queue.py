@@ -3,9 +3,10 @@
 
 The controller enforces scoped typed approvals, ordered scientific checkpoints,
 active/deferred PI queues, the five-question pause, evidence-record links,
-lightweight active-job recovery, and control-state audits. It records authority
-and artifact availability; it does not judge scientific adequacy, create
-authority, schedule itself, or kill processes.
+lightweight active-job recovery, bounded project-instruction maintenance, and
+control-state audits. It records authority and artifact availability; it does
+not judge scientific adequacy, rewrite AGENTS.md, create authority, schedule
+itself, or kill processes.
 """
 
 from __future__ import annotations
@@ -20,10 +21,17 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 5
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5}
+SCHEMA_VERSION = 6
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6}
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
+RECENT_INSTRUCTION_UPDATE_LIMIT = 20
+ROOT_AGENTS_TARGET_BYTES = 8 * 1024
+ROOT_AGENTS_REVIEW_BYTES = 12 * 1024
+EFFECTIVE_AGENTS_TARGET_BYTES = 16 * 1024
+CODEX_PROJECT_DOC_DEFAULT_BYTES = 32 * 1024
+AGENTS_FILENAMES = ("AGENTS.override.md", "AGENTS.md")
+INSTRUCTION_CHANGE_KINDS = {"mechanical", "compaction", "semantic"}
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 QUESTION_LAYERS = {
     "compass",
@@ -32,6 +40,7 @@ QUESTION_LAYERS = {
     "paper",
     "resource",
     "external",
+    "instructions",
     "other",
 }
 CHECKPOINT_LAYERS = ("compass", "direction", "science", "paper")
@@ -114,6 +123,20 @@ def empty_checkpoint() -> dict[str, Any]:
     }
 
 
+def empty_instruction_maintenance() -> dict[str, Any]:
+    return {
+        "policy": {
+            "root_target_bytes": ROOT_AGENTS_TARGET_BYTES,
+            "root_review_bytes": ROOT_AGENTS_REVIEW_BYTES,
+            "effective_chain_target_bytes": EFFECTIVE_AGENTS_TARGET_BYTES,
+            "codex_project_doc_default_bytes": CODEX_PROJECT_DOC_DEFAULT_BYTES,
+        },
+        "last_audit": None,
+        "recent_updates": [],
+        "compacted_update_count": 0,
+    }
+
+
 def initial_state(project: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -136,6 +159,7 @@ def initial_state(project: str) -> dict[str, Any]:
             "mode": "recent_only",
             "recent_limit": RECENT_NOTIFICATION_LIMIT,
         },
+        "instruction_maintenance": empty_instruction_maintenance(),
         "jobs": [],
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -221,6 +245,8 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
             payload = science.get("payload") or {}
             if not payload.get("evidence_refs"):
                 science["status"] = "LEGACY_CONFIRMED_NEEDS_AUDIT"
+    if version in {1, 2, 3, 4, 5}:
+        state.setdefault("instruction_maintenance", empty_instruction_maintenance())
         state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -248,6 +274,7 @@ def load_state(path: Path) -> dict[str, Any]:
         "checkpoint_history": list,
         "macro_questions": list,
         "notifications": list,
+        "instruction_maintenance": dict,
         "jobs": list,
     }
     for key, expected_type in required_types.items():
@@ -289,6 +316,159 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def project_local_path(state_path: Path, raw: str, *, require_file: bool = False) -> tuple[Path, str]:
+    project_root = project_root_for_state(state_path).resolve()
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = project_root / target
+    target = target.resolve()
+    try:
+        stored = target.relative_to(project_root).as_posix()
+    except ValueError as exc:
+        raise SystemExit(
+            f"Project instruction path must stay inside {project_root}: {target}"
+        ) from exc
+    if require_file and not target.is_file():
+        raise SystemExit(f"Project instruction file does not exist: {target}")
+    return target, stored
+
+
+def analyze_project_instructions(
+    state_path: Path,
+    cwd_raw: str | None = None,
+    fallback_filenames: list[str] | None = None,
+) -> dict[str, Any]:
+    """Inspect the project-local AGENTS chain for one working directory.
+
+    This intentionally excludes global Codex instructions because they are not
+    owned by the research project. The 32 KiB comparison is therefore
+    conservative: global instructions may consume additional context.
+    """
+
+    project_root = project_root_for_state(state_path).resolve()
+    fallback_filenames = fallback_filenames or []
+    for name in fallback_filenames:
+        if Path(name).name != name or name in AGENTS_FILENAMES:
+            raise SystemExit(f"Invalid project instruction fallback filename: {name!r}")
+    instruction_filenames = AGENTS_FILENAMES + tuple(fallback_filenames)
+    if cwd_raw:
+        cwd = Path(cwd_raw).expanduser()
+        if not cwd.is_absolute():
+            cwd = project_root / cwd
+        cwd = cwd.resolve()
+    else:
+        cwd = project_root
+    if not cwd.is_dir():
+        raise SystemExit(f"Instruction audit working directory does not exist: {cwd}")
+    try:
+        relative_cwd = cwd.relative_to(project_root)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Instruction audit working directory must stay inside {project_root}: {cwd}"
+        ) from exc
+
+    directories = [project_root]
+    current = project_root
+    for part in relative_cwd.parts:
+        current = current / part
+        directories.append(current)
+
+    observed: list[dict[str, Any]] = []
+    effective: list[dict[str, Any]] = []
+    shadowed: list[dict[str, str]] = []
+    root_instruction: dict[str, Any] | None = None
+    for directory in directories:
+        existing = [
+            directory / name
+            for name in instruction_filenames
+            if (directory / name).is_file()
+        ]
+        selected = existing[0] if existing else None
+        selected_stored = (
+            selected.relative_to(project_root).as_posix() if selected is not None else None
+        )
+        for candidate in existing:
+            stored = candidate.relative_to(project_root).as_posix()
+            entry = {
+                "path": stored,
+                "bytes": candidate.stat().st_size,
+                "sha256": sha256_file(candidate),
+                "selected": candidate == selected,
+                "shadowed_by": None if candidate == selected else selected_stored,
+            }
+            observed.append(entry)
+            if candidate == selected:
+                effective.append(entry)
+                if directory == project_root:
+                    root_instruction = entry
+            else:
+                shadowed.append({"path": stored, "shadowed_by": str(selected_stored)})
+
+    chain_bytes = sum(int(item["bytes"]) for item in effective)
+    issues: list[dict[str, str]] = []
+
+    def add(code: str, severity: str, message: str) -> None:
+        issues.append({"code": code, "severity": severity, "message": message})
+
+    if root_instruction:
+        root_bytes = int(root_instruction["bytes"])
+        if root_bytes > ROOT_AGENTS_REVIEW_BYTES:
+            add(
+                "ROOT_AGENTS_REVIEW_REQUIRED",
+                "P1",
+                f"Root project instructions use {root_bytes} bytes; compact or route details before further growth",
+            )
+        elif root_bytes > ROOT_AGENTS_TARGET_BYTES:
+            add(
+                "ROOT_AGENTS_TARGET_EXCEEDED",
+                "P2",
+                f"Root project instructions use {root_bytes} bytes, above the {ROOT_AGENTS_TARGET_BYTES}-byte target",
+            )
+    if chain_bytes > CODEX_PROJECT_DOC_DEFAULT_BYTES:
+        add(
+            "PROJECT_INSTRUCTION_CHAIN_DEFAULT_LIMIT_EXCEEDED",
+            "P0",
+            f"The project-local effective chain alone uses {chain_bytes} bytes, above the default {CODEX_PROJECT_DOC_DEFAULT_BYTES}-byte Codex project-doc budget",
+        )
+    elif chain_bytes > EFFECTIVE_AGENTS_TARGET_BYTES:
+        add(
+            "PROJECT_INSTRUCTION_CHAIN_TARGET_EXCEEDED",
+            "P1",
+            f"The project-local effective chain uses {chain_bytes} bytes, above the {EFFECTIVE_AGENTS_TARGET_BYTES}-byte target",
+        )
+
+    status = "OK"
+    if any(issue["severity"] == "P0" for issue in issues):
+        status = "OVER_DEFAULT_LIMIT"
+    elif issues:
+        status = "REVIEW"
+    elif not effective:
+        status = "NO_PROJECT_INSTRUCTIONS"
+    return {
+        "audited_at": now_iso(),
+        "scope_cwd": "." if str(relative_cwd) == "." else relative_cwd.as_posix(),
+        "fallback_filenames": fallback_filenames,
+        "project_local_only": True,
+        "status": status,
+        "effective_chain_bytes": chain_bytes,
+        "effective_files": effective,
+        "observed_files": observed,
+        "shadowed_files": shadowed,
+        "issues": issues,
+    }
+
+
+def instruction_snapshot_signature(audit: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    return sorted(
+        (
+            str(item.get("path")),
+            str(item.get("sha256")),
+            bool(item.get("selected")),
+        )
+        for item in audit.get("observed_files", [])
+    )
 
 
 def normalize_record(path: Path, raw: str) -> tuple[Path, str, str]:
@@ -621,7 +801,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v5",
+                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v6",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -638,7 +818,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
                 "P0",
-                f"Confirmed {layer} checkpoint lacks required schema-v5 control fields",
+                f"Confirmed {layer} checkpoint lacks required schema-v6 control fields",
             )
         source = checkpoint.get("decision_source") or {}
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and source.get(
@@ -715,6 +895,69 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0",
                 f"Core scientific field {key!r} must live only in compass/L1/L2 state",
             )
+    maintenance = state.get("instruction_maintenance") or {}
+    for update in maintenance.get("recent_updates", []):
+        kind = update.get("kind")
+        if kind not in INSTRUCTION_CHANGE_KINDS:
+            add(
+                "INVALID_INSTRUCTION_UPDATE_KIND",
+                "P1",
+                f"Instruction update has invalid kind {kind!r}",
+            )
+            continue
+        if not update.get("path") or not update.get("after_sha256"):
+            add(
+                "INSTRUCTION_UPDATE_RECEIPT_INCOMPLETE",
+                "P1",
+                "Instruction update receipt lacks its path or resulting hash",
+            )
+        if kind == "semantic":
+            source = update.get("decision_source") or {}
+            if source.get("outcome") not in APPROVING_OUTCOMES:
+                add(
+                    "SEMANTIC_INSTRUCTION_UPDATE_UNAPPROVED",
+                    "P0",
+                    f"Semantic instruction update for {update.get('path')!r} lacks PI approval",
+                )
+            if source.get("type") == "answered_question":
+                matches = [
+                    q
+                    for q in state["macro_questions"]
+                    if q.get("id") == source.get("question_id")
+                ]
+                expected = {
+                    "type": "instruction_update",
+                    "path": update.get("path"),
+                    "after_sha256": update.get("after_sha256"),
+                }
+                if not matches or any(
+                    (matches[0].get("consumed_by") or {}).get(key) != value
+                    for key, value in expected.items()
+                ):
+                    add(
+                        "INSTRUCTION_DECISION_RECEIPT_NOT_BOUND",
+                        "P0",
+                        f"Semantic instruction update for {update.get('path')!r} is not bound to one scoped PI decision",
+                    )
+    last_instruction_audit = maintenance.get("last_audit")
+    if isinstance(last_instruction_audit, dict):
+        try:
+            current_instruction_audit = analyze_project_instructions(
+                state_path,
+                last_instruction_audit.get("scope_cwd"),
+                last_instruction_audit.get("fallback_filenames"),
+            )
+        except SystemExit as exc:
+            add("PROJECT_INSTRUCTION_AUDIT_SCOPE_INVALID", "P1", str(exc))
+        else:
+            if instruction_snapshot_signature(
+                current_instruction_audit
+            ) != instruction_snapshot_signature(last_instruction_audit):
+                add(
+                    "PROJECT_INSTRUCTIONS_CHANGED_SINCE_AUDIT",
+                    "P1",
+                    "Project AGENTS instructions changed after the last recorded audit; audit and record the update",
+                )
     active_targets: set[str] = set()
     for question in active_questions(state) + deferred_questions(state):
         target = str(question.get("decision_target") or "").strip()
@@ -845,6 +1088,7 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "frozen_history_count": len(state["frozen_history"]),
         "notification_count": len(state["notifications"]),
         "notification_compacted_count": state.get("notification_compacted_count", 0),
+        "instruction_maintenance": state.get("instruction_maintenance"),
         "active_jobs": active_jobs,
         "control_issues": issues,
         "updated_at": state["updated_at"],
@@ -869,6 +1113,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         )
     state = initial_state(args.project)
     ensure_scaffold(path, args.project)
+    state["instruction_maintenance"]["last_audit"] = analyze_project_instructions(path)
     if args.phase == "exploration":
         l1 = research_root_for_state(path) / "L1-directions.md"
         record, stored, _ = normalize_record(path, str(l1))
@@ -1072,21 +1317,220 @@ def compact_recent_notifications(state: dict[str, Any]) -> None:
         )
 
 
-def cmd_notify(args: argparse.Namespace) -> None:
-    path = Path(args.state)
-    state = load_state(path)
+def append_notification(state: dict[str, Any], text: str) -> dict[str, Any]:
     state["notification_sequence"] = int(state.get("notification_sequence", 0)) + 1
     notification = {
         "id": f"N{state['notification_sequence']:03d}",
-        "text": args.text,
+        "text": text,
         "created_at": now_iso(),
     }
     state["notifications"].append(notification)
     compact_recent_notifications(state)
+    return notification
+
+
+def cmd_notify(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    notification = append_notification(state, args.text)
     save_state(path, state)
     print(
         json.dumps(
             {"added": notification, "state": state_summary(path, state)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def instruction_decision_source(
+    state: dict[str, Any], args: argparse.Namespace, stored_path: str
+) -> dict[str, str]:
+    expected_target = f"instructions:{stored_path}"
+    if args.decision_id:
+        matches = [q for q in state["macro_questions"] if q.get("id") == args.decision_id]
+        if not matches:
+            raise SystemExit(f"Decision question not found: {args.decision_id}")
+        question = matches[0]
+        if question.get("status") != "ANSWERED" or not question.get("decision"):
+            raise SystemExit(f"Decision question is not answered: {args.decision_id}")
+        if question.get("layer") != "instructions":
+            raise SystemExit(
+                f"Question {args.decision_id} belongs to layer {question.get('layer')!r}, not 'instructions'"
+            )
+        if question.get("decision_target") != expected_target:
+            raise SystemExit(
+                f"Question {args.decision_id} targets {question.get('decision_target')!r}, not {expected_target!r}"
+            )
+        if question.get("consumed_by"):
+            raise SystemExit(
+                f"Question {args.decision_id} approval was already consumed by {question.get('consumed_by')}"
+            )
+        if question.get("outcome") not in APPROVING_OUTCOMES:
+            raise SystemExit(
+                f"Question {args.decision_id} outcome {question.get('outcome')!r} cannot authorize a semantic instruction update"
+            )
+        return {
+            "type": "answered_question",
+            "question_id": args.decision_id,
+            "decision": str(question["decision"]),
+            "outcome": str(question["outcome"]),
+        }
+    decision = str(args.pi_decision or "").strip()
+    if not decision:
+        raise SystemExit(
+            "Semantic instruction maintenance requires --decision-id or the user's actual --pi-decision"
+        )
+    if args.pi_outcome not in APPROVING_OUTCOMES:
+        raise SystemExit(
+            "Direct semantic instruction maintenance requires --pi-outcome approve or select"
+        )
+    return {
+        "type": "direct_pi_instruction",
+        "decision": decision,
+        "outcome": args.pi_outcome,
+    }
+
+
+def compact_recent_instruction_updates(maintenance: dict[str, Any]) -> None:
+    updates = maintenance.setdefault("recent_updates", [])
+    excess = max(0, len(updates) - RECENT_INSTRUCTION_UPDATE_LIMIT)
+    if excess:
+        del updates[:excess]
+        maintenance["compacted_update_count"] = (
+            int(maintenance.get("compacted_update_count", 0)) + excess
+        )
+
+
+def cmd_agents_audit(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    audit = analyze_project_instructions(path, args.cwd, args.fallback_name)
+    state["instruction_maintenance"]["last_audit"] = audit
+    save_state(path, state)
+    print(
+        json.dumps(
+            {"instruction_audit": audit, "state": state_summary(path, state)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    if audit["status"] == "OVER_DEFAULT_LIMIT":
+        raise SystemExit(2)
+
+
+def cmd_agents_record(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    maintenance = state["instruction_maintenance"]
+    previous_audit = maintenance.get("last_audit")
+    if not isinstance(previous_audit, dict):
+        raise SystemExit("Run agents-audit before editing project instructions")
+
+    target, stored = project_local_path(path, args.path, require_file=True)
+    allowed_names = AGENTS_FILENAMES + tuple(previous_audit.get("fallback_filenames", []))
+    if target.name not in allowed_names:
+        raise SystemExit(
+            "Instruction maintenance records only discovered AGENTS files or configured fallback names"
+        )
+    current_audit = analyze_project_instructions(
+        path,
+        previous_audit.get("scope_cwd"),
+        previous_audit.get("fallback_filenames"),
+    )
+    before_by_path = {
+        str(item.get("path")): item for item in previous_audit.get("observed_files", [])
+    }
+    after_by_path = {
+        str(item.get("path")): item for item in current_audit.get("observed_files", [])
+    }
+    changed_paths = sorted(
+        candidate
+        for candidate in set(before_by_path) | set(after_by_path)
+        if (before_by_path.get(candidate) or {}).get("sha256")
+        != (after_by_path.get(candidate) or {}).get("sha256")
+    )
+    if changed_paths != [stored]:
+        raise SystemExit(
+            "Record one instruction-file content change at a time; changed paths are: "
+            + (", ".join(changed_paths) if changed_paths else "none")
+        )
+
+    before = before_by_path.get(stored)
+    if before is None:
+        if not args.before_absent:
+            raise SystemExit(
+                f"{stored} was absent from the last audit; use --before-absent only for a newly created file"
+            )
+        project_root = project_root_for_state(path).resolve()
+        audited_cwd = project_root / str(previous_audit.get("scope_cwd") or ".")
+        try:
+            audited_cwd.resolve().relative_to(target.parent.resolve())
+        except ValueError as exc:
+            raise SystemExit(
+                f"The last audit did not cover the directory containing {stored}"
+            ) from exc
+        before_sha = None
+        before_bytes = 0
+    else:
+        if args.before_absent:
+            raise SystemExit(f"{stored} existed in the last audit; remove --before-absent")
+        before_sha = str(before["sha256"])
+        before_bytes = int(before["bytes"])
+
+    after = after_by_path[stored]
+    after_sha = str(after["sha256"])
+    after_bytes = int(after["bytes"])
+    if args.kind == "compaction" and after_bytes >= before_bytes:
+        raise SystemExit(
+            "A compaction receipt requires the resulting instruction file to be smaller"
+        )
+
+    if args.kind == "semantic":
+        source = instruction_decision_source(state, args, stored)
+    else:
+        if args.decision_id or args.pi_decision or args.pi_outcome:
+            raise SystemExit(
+                "Mechanical and compaction maintenance do not consume PI approval; omit decision arguments"
+            )
+        source = {"type": "autonomous_maintenance"}
+
+    receipt = {
+        "path": stored,
+        "kind": args.kind,
+        "reason": args.reason,
+        "summary": args.summary,
+        "before_sha256": before_sha,
+        "before_bytes": before_bytes,
+        "after_sha256": after_sha,
+        "after_bytes": after_bytes,
+        "decision_source": source,
+        "recorded_at": now_iso(),
+    }
+    maintenance["recent_updates"].append(receipt)
+    compact_recent_instruction_updates(maintenance)
+    if args.kind == "semantic":
+        consume_question(
+            state,
+            args.decision_id,
+            {
+                "type": "instruction_update",
+                "path": stored,
+                "after_sha256": after_sha,
+            },
+        )
+    notification = append_notification(state, f"项目说明维护：{args.summary}")
+    maintenance["last_audit"] = current_audit
+    refresh_pause(state)
+    save_state(path, state)
+    print(
+        json.dumps(
+            {
+                "recorded": receipt,
+                "notification": notification,
+                "instruction_audit": current_audit,
+                "state": state_summary(path, state),
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -1583,6 +2027,13 @@ def add_decision_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pi-outcome", choices=sorted(APPROVING_OUTCOMES))
 
 
+def add_optional_decision_source_args(parser: argparse.ArgumentParser) -> None:
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--decision-id")
+    source.add_argument("--pi-decision")
+    parser.add_argument("--pi-outcome", choices=sorted(APPROVING_OUTCOMES))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1646,6 +2097,43 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parser.add_argument("state")
     compact_parser.add_argument("--keep", type=int, default=RECENT_NOTIFICATION_LIMIT)
     compact_parser.set_defaults(func=cmd_compact_notifications)
+
+    agents_audit_parser = subparsers.add_parser(
+        "agents-audit",
+        help="Audit the project-local AGENTS instruction chain and record a snapshot",
+    )
+    agents_audit_parser.add_argument("state")
+    agents_audit_parser.add_argument(
+        "--cwd", help="Project subdirectory whose effective instruction chain should be audited"
+    )
+    agents_audit_parser.add_argument(
+        "--fallback-name",
+        action="append",
+        default=[],
+        help="Configured project_doc_fallback_filenames entry; repeat in precedence order",
+    )
+    agents_audit_parser.set_defaults(func=cmd_agents_audit)
+
+    agents_record_parser = subparsers.add_parser(
+        "agents-record",
+        help="Record one audited AGENTS instruction-file update",
+    )
+    agents_record_parser.add_argument("state")
+    agents_record_parser.add_argument("--path", required=True)
+    agents_record_parser.add_argument(
+        "--kind", required=True, choices=sorted(INSTRUCTION_CHANGE_KINDS)
+    )
+    agents_record_parser.add_argument("--reason", required=True)
+    agents_record_parser.add_argument(
+        "--summary", required=True, help="Plain-language notification for the user"
+    )
+    agents_record_parser.add_argument(
+        "--before-absent",
+        action="store_true",
+        help="Declare that this file did not exist in the immediately preceding audit",
+    )
+    add_optional_decision_source_args(agents_record_parser)
+    agents_record_parser.set_defaults(func=cmd_agents_record)
 
     phase_parser = subparsers.add_parser("phase", help="Apply a legal workflow transition")
     phase_parser.add_argument("state")

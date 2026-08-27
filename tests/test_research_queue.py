@@ -196,6 +196,11 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertEqual(json.loads(output.stdout)["phase"], "discussion")
         self.assertTrue(self.l1.is_file())
         self.assertTrue(self.l1.parent.joinpath("L2").is_dir())
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["instruction_maintenance"]["last_audit"]["status"],
+            "NO_PROJECT_INSTRUCTIONS",
+        )
 
         late = self.root / "late.json"
         result = self.run_cli(
@@ -457,6 +462,21 @@ class ResearchQueueCLITest(unittest.TestCase):
         codes = {issue["code"] for issue in summary["control_issues"]}
         self.assertIn("LEGACY_SCIENCE_NEEDS_RECONFIRMATION", codes)
 
+    def test_schema_v5_migrates_without_changing_scientific_state(self) -> None:
+        self.init_exploration()
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        original_compass = state["layer_checkpoints"]["compass"]
+        state["schema_version"] = 5
+        state.pop("instruction_maintenance")
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        summary = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertEqual(summary["schema_version"], 6)
+        self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
+        self.assertEqual(
+            summary["instruction_maintenance"]["recent_updates"], []
+        )
+
     def test_direction_change_invalidates_science(self) -> None:
         self.init_exploration()
         self.confirm_direction(
@@ -690,6 +710,147 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("job-remove", self.state, "--id", "J001")
         summary = json.loads(self.run_cli("status", self.state).stdout)
         self.assertEqual(summary["active_jobs"], [])
+
+    def test_agents_audit_discovers_effective_chain_and_size_review(self) -> None:
+        self.run_cli("init", self.state, "--project", "demo")
+        root_agents = self.root / "AGENTS.md"
+        nested = self.root / "src" / "service"
+        nested.mkdir(parents=True)
+        nested_agents = nested / "AGENTS.md"
+        root_agents.write_text("r" * (12 * 1024 + 1), encoding="utf-8")
+        nested_agents.write_text("nested rules", encoding="utf-8")
+
+        result = self.run_cli("agents-audit", self.state, "--cwd", nested)
+        audit = json.loads(result.stdout)["instruction_audit"]
+        self.assertEqual(audit["status"], "REVIEW")
+        self.assertEqual(
+            [item["path"] for item in audit["effective_files"]],
+            ["AGENTS.md", "src/service/AGENTS.md"],
+        )
+        codes = {issue["code"] for issue in audit["issues"]}
+        self.assertIn("ROOT_AGENTS_REVIEW_REQUIRED", codes)
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stored["instruction_maintenance"]["last_audit"]["scope_cwd"],
+            "src/service",
+        )
+
+    def test_unrecorded_agents_change_is_a_control_issue(self) -> None:
+        self.run_cli("init", self.state, "--project", "demo")
+        agents = self.root / "AGENTS.md"
+        agents.write_text("stable rules", encoding="utf-8")
+        self.run_cli("agents-audit", self.state)
+        agents.write_text("changed rules", encoding="utf-8")
+
+        result = self.run_cli("audit", self.state, ok=False)
+        codes = {
+            issue["code"]
+            for issue in json.loads(result.stdout)["control_issues"]
+        }
+        self.assertIn("PROJECT_INSTRUCTIONS_CHANGED_SINCE_AUDIT", codes)
+
+    def test_agents_compaction_records_bounded_receipt_and_notification(self) -> None:
+        self.run_cli("init", self.state, "--project", "demo")
+        agents = self.root / "AGENTS.md"
+        agents.write_text("stable rule\n" + "old detail\n" * 20, encoding="utf-8")
+        self.run_cli("agents-audit", self.state)
+        agents.write_text("stable rule\n", encoding="utf-8")
+
+        result = self.run_cli(
+            "agents-record",
+            self.state,
+            "--path",
+            agents,
+            "--kind",
+            "compaction",
+            "--reason",
+            "Moved duplicated detail to its canonical project record",
+            "--summary",
+            "删去重复历史，只保留稳定规则；研究结论和权限没有变化。",
+        )
+        payload = json.loads(result.stdout)
+        receipt = payload["recorded"]
+        self.assertLess(receipt["after_bytes"], receipt["before_bytes"])
+        self.assertEqual(
+            receipt["decision_source"]["type"], "autonomous_maintenance"
+        )
+        self.assertIn("项目说明维护", payload["notification"]["text"])
+        self.run_cli("audit", self.state)
+
+    def test_semantic_agents_update_consumes_scoped_pi_decision(self) -> None:
+        self.run_cli("init", self.state, "--project", "demo")
+        agents = self.root / "AGENTS.md"
+        agents.write_text("ask before external sends\n", encoding="utf-8")
+        self.run_cli("agents-audit", self.state)
+        agents.write_text("external sends are allowed\n", encoding="utf-8")
+
+        missing = self.run_cli(
+            "agents-record",
+            self.state,
+            "--path",
+            agents,
+            "--kind",
+            "semantic",
+            "--reason",
+            "Change external-send authority",
+            "--summary",
+            "修改外发权限。",
+            ok=False,
+        )
+        self.assertIn("requires --decision-id", missing.stderr)
+
+        added = self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "instructions",
+            "--target",
+            "instructions:AGENTS.md",
+            "--text",
+            "Change the external-send authority?",
+        )
+        question_id = json.loads(added.stdout)["added"]["id"]
+        self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            question_id,
+            "--decision",
+            "Approve this exact instruction change",
+            "--outcome",
+            "approve",
+        )
+        result = self.run_cli(
+            "agents-record",
+            self.state,
+            "--path",
+            agents,
+            "--kind",
+            "semantic",
+            "--reason",
+            "Change external-send authority",
+            "--summary",
+            "按已确认决定修改外发权限。",
+            "--decision-id",
+            question_id,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["recorded"]["decision_source"]["question_id"], question_id
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        question = next(q for q in state["macro_questions"] if q["id"] == question_id)
+        self.assertEqual(question["consumed_by"]["type"], "instruction_update")
+        self.run_cli("audit", self.state)
+
+    def test_agents_audit_flags_project_chain_above_default_budget(self) -> None:
+        self.run_cli("init", self.state, "--project", "demo")
+        (self.root / "AGENTS.md").write_text("x" * (32 * 1024 + 1), encoding="utf-8")
+        result = self.run_cli("agents-audit", self.state, ok=False)
+        audit = json.loads(result.stdout)["instruction_audit"]
+        self.assertEqual(audit["status"], "OVER_DEFAULT_LIMIT")
+        codes = {issue["code"] for issue in audit["issues"]}
+        self.assertIn("PROJECT_INSTRUCTION_CHAIN_DEFAULT_LIMIT_EXCEEDED", codes)
 
 
 if __name__ == "__main__":

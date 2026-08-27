@@ -15,15 +15,22 @@ must be true before the next phase.
   phases.
 - `PAUSED_FOR_PI` is a pause status that can overlay an execution phase; it is
   not a scientific stage and does not erase the underlying phase.
+- Project-instruction maintenance is another overlay. It keeps stable repository
+  instructions usable but neither creates a research layer nor advances a
+  scientific phase.
 
 Use these exact phase names in documentation and `research_queue.py`.
 
 ## Existing-project intake
 
 Run `research_queue.py audit STATE` before resuming any project with workflow
-state. Legacy approvals without the current structured payload or scoped
-decision receipt are reported as needing audit; existing code and results do
-not waive that decision.
+state. Run `agents-audit STATE --cwd WORKING_DIRECTORY` as well when project
+instructions exist, the working directory changed, or the controller has no
+instruction snapshot. Legacy approvals without the current structured payload
+or scoped decision receipt are reported as needing audit; existing code and
+results do not waive that decision. Follow
+[agents-maintenance.md](agents-maintenance.md) for instruction content and
+change authority.
 
 If no workflow state exists, inspect the active project authority and evidence
 before initializing:
@@ -51,6 +58,7 @@ Gate `G0 EXPLORATION_READY`:
 - the domain is user-confirmed;
 - a venue or submission window is user-confirmed;
 - project instructions and existing state have been located;
+- the effective project-local instruction chain has been audited when present;
 - execution is authorized.
 
 Initialize in `discussion` by default. Starting directly in `exploration` is
@@ -235,6 +243,9 @@ not schedule, poll, or terminate the process by itself.
 current phase lacks a complete typed checkpoint, a decision receipt is unscoped
 or incorrectly reused, a core field has conflicting authorities, a required
 evidence reference or durable record is missing, a paper-ready assessment is
-incomplete, a legacy approval needs audit, or an active job cannot be resumed.
-It verifies provenance and availability, not scientific adequacy. Run it at
-startup, after migration, and before paper handoff.
+incomplete, a legacy approval needs audit, an audited instruction chain changed
+without a receipt, or an active job cannot be resumed. It verifies provenance
+and availability, not scientific adequacy. `agents-audit` separately reports
+instruction precedence and size without treating an oversized file as a
+scientific checkpoint failure. Run the control audit at startup, after
+migration, and before paper handoff.

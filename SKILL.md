@@ -38,6 +38,7 @@ Use these files by purpose:
 | Scout tasks, datasets, papers, baselines, and methods | [references/exploration-policy.md](references/exploration-policy.md) |
 | Handle notifications, unanswered questions, and pause behavior | [references/collaboration-policy.md](references/collaboration-policy.md) |
 | Create or update L1/L2/L3 project state | [references/research-state.md](references/research-state.md) |
+| Audit or change project `AGENTS.md` instructions | [references/agents-maintenance.md](references/agents-maintenance.md) |
 | Initialize, audit, resume, and enforce PI checkpoints | `scripts/research_queue.py` |
 
 ## Authority and invariants
@@ -73,6 +74,11 @@ Use these files by purpose:
   checkpoints. Use `frozen_by_pi` only for additional project-specific choices;
   never duplicate core fields such as venue, domain, task, dataset, evidence
   standard, scientific story, or headline claim there.
+- Treat project `AGENTS.md` as a bounded stable contract and router, not another
+  research layer. Keep dynamic L1/L2/L3 content and live controller state out of
+  it. Semantic instruction changes use the existing scoped PI queue; verified
+  mechanical repairs and meaning-preserving compaction are autonomous
+  maintenance with a plain-language notification.
 
 ## Activate and resume
 
@@ -84,11 +90,15 @@ target venue plus the research domain. A starting concept is optional and is a
 seed unless the user explicitly freezes it.
 
 For a long-running project, run `scripts/research_queue.py audit STATE` before
-resuming. This is a control-state audit: it checks authority, scoped decisions,
-checkpoint links, required evidence references, and resumable files, but it does
-not decide whether a contribution is scientifically adequate. Treat any
-incomplete or legacy checkpoint as unresolved even if old code or experiments
-exist. Do not reconstruct approval from chat memory.
+resuming. Also run `agents-audit STATE --cwd WORKING_DIRECTORY` when project
+instructions exist, the working directory changed, or no instruction snapshot
+has been recorded. The first audit checks authority, scoped decisions,
+checkpoint links, required evidence references, resumable files, and
+unrecorded instruction changes. The second discovers the effective
+project-local instruction chain and checks its size; it does not rewrite it or
+judge semantic equivalence. Treat any incomplete or legacy checkpoint as
+unresolved even if old code or experiments exist. Do not reconstruct approval
+from chat memory.
 
 For an existing project without this state, first classify its maturity. If the
 task, method, main experiment package, and manuscript direction are already

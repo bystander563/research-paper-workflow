@@ -3,7 +3,8 @@
 Read this reference for research spanning multiple runs, monitoring cycles, or
 context compactions. It defines the durable scientific state, not a chronological
 ledger of all activity. `research_queue.py` separately records typed PI
-questions, structured checkpoints, phase state, and resumable active jobs.
+questions, structured checkpoints, phase state, resumable active jobs, and a
+bounded project-instruction maintenance receipt.
 
 ## Retention contract
 
@@ -51,6 +52,19 @@ For an existing project with `.codex/research-ledger.md`, keep it as legacy
 history unless the user authorizes cleanup. At the next material checkpoint,
 create the layered files, copy only current state and source links, and link to
 the legacy file. Do not mechanically rewrite its full history.
+
+## Project instructions are outside the research layers
+
+`AGENTS.md` and `AGENTS.override.md` are stable execution contracts and routers;
+they are not L1, L2, L3, or a replacement for the controller. They may tell an
+agent which active L1/L2 files or project truth sources to read, but must not
+copy their changing contents.
+
+The schema-v6 controller stores only the latest project-local instruction-chain
+snapshot plus a bounded set of update receipts containing paths, hashes, sizes,
+change classes, reasons, and decision provenance. It stores no instruction
+contents. See [agents-maintenance.md](agents-maintenance.md) for content,
+budgets, change classes, and authority.
 
 ## L1: direction portfolio
 
@@ -100,7 +114,7 @@ The L1 decision packet states, in plain language:
 Record the exact PI instruction in the queue checkpoint. Code or early results
 do not imply selection.
 
-The schema-v5 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v6 L1 checkpoint separately stores the selected task type, dataset,
 four evidence-standard fields, approving outcome, durable-record path, and the
 record hash at confirmation. A queued approval is also bound to this direction
 ID and consumed once. The hash is provenance for the approved snapshot; L1
@@ -250,7 +264,7 @@ scientific-story checkpoint. Ask whether to promote the problem + core mechanism
 + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v5 L2 checkpoint stores the active direction ID, problem, core
+The schema-v6 L2 checkpoint stores the active direction ID, problem, core
 mechanism, innovation claim, external-baseline status, ceiling summary,
 approving outcome, durable-record path, and hashed references to the nearest-
 work, external-baseline, and result records used for the decision. A queued
@@ -315,9 +329,11 @@ headline claim.
 
 ## Legacy-state audit
 
-Schema-v1/v2/v3/v4 states are readable. Unstructured L1/L2 approvals, unscoped
-decision questions, or schema-v4 L2 checkpoints without evidence references are
-marked for audit and do not satisfy schema-v5 gates. Existing scoped approvals
+Schema-v1/v2/v3/v4/v5 states are readable. Unstructured L1/L2 approvals,
+unscoped decision questions, or schema-v4 L2 checkpoints without evidence
+references are marked for audit and do not satisfy schema-v6 gates. Schema-v5
+scientific checkpoints retain their meaning while receiving an empty
+instruction-maintenance state during migration. Existing scoped approvals
 already linked from a checkpoint are migrated as consumed by that checkpoint;
 do not silently turn an unrelated old summary into new user approval. Run
 `research_queue.py audit STATE` after migration.

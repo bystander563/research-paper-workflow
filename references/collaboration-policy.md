@@ -13,6 +13,9 @@ The user makes these decisions:
 - promote or replace the L2 problem, core mechanism, and innovation claim;
 - change another field explicitly frozen by the user;
 - approve paid compute or rental;
+- approve a semantic change to stable project instructions when it changes
+  authority, scope, protocol, permissions, or required validation and is not
+  merely reflecting an already recorded owning decision;
 - enter paper writing, select the headline claim, or choose/change an unfixed
   venue;
 - authorize submission, publication, or an external send.
@@ -60,6 +63,8 @@ such as:
 - evidence changed the project-level interpretation;
 - the next model family will change;
 - a routine implementation repair changed or invalidated scientific evidence;
+- a mechanical repair or meaning-preserving compaction changed the effective
+  project instructions;
 - a long-running job completed or failed.
 
 Use plain language:
@@ -134,6 +139,13 @@ so another context can recover its command/session and next action. The
 controller blocks a new active job while paused but still allows an existing job
 to be marked complete or failed. It does not itself schedule or poll jobs.
 
+Project-instruction questions use the same queue and count: set `layer` to
+`instructions` and target the exact project-relative file, such as
+`instructions:AGENTS.md`. Mechanical repairs and verified meaning-preserving
+compaction are notifications, not questions. See
+[agents-maintenance.md](agents-maintenance.md); do not create a second approval
+system for instruction changes.
+
 ## Execution defaults
 
 Within the current project and authorization:
@@ -179,6 +191,8 @@ Useful commands:
 python scripts/research_queue.py init STATE --project NAME
 python scripts/research_queue.py init STATE --project NAME --phase exploration --venue-or-window "ICASSP" --domain "sMRI" --pi-decision "用户确认投稿目标和领域" --pi-outcome select
 python scripts/research_queue.py audit STATE
+python scripts/research_queue.py agents-audit STATE --cwd PROJECT_SUBDIRECTORY
+python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..."
 python scripts/research_queue.py question STATE --layer direction --target direction:D001 --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
 python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
 python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"
