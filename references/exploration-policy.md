@@ -10,7 +10,11 @@ Before open-ended exploration, establish:
 2. the research domain;
 3. an optional starting concept from the user.
 
-The first two are the research compass and should normally be recorded as `FROZEN_BY_PI`. A starting concept is inspiration, not a novelty claim and not automatically frozen. If the user says the concept itself must remain central, record that explicitly.
+The first two belong only to the typed research-compass checkpoint; do not also
+copy them into `frozen_by_pi`. A starting concept is inspiration, not a novelty
+claim and not automatically frozen. If the user says the concept itself must
+remain central, record that as a distinct project-specific concept constraint
+rather than creating a second copy of the compass field.
 
 Verify current venue timing and scope before spending heavily, because conference dates and calls change. Do not silently redirect the work to a different venue or domain merely because another benchmark is easier.
 

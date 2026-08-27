@@ -100,10 +100,11 @@ The L1 decision packet states, in plain language:
 Record the exact PI instruction in the queue checkpoint. Code or early results
 do not imply selection.
 
-The schema-v4 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v5 L1 checkpoint separately stores the selected task type, dataset,
 four evidence-standard fields, approving outcome, durable-record path, and the
-record hash at confirmation. The hash is provenance for the approved snapshot;
-L1 remains a live file and may later change through recorded decisions.
+record hash at confirmation. A queued approval is also bound to this direction
+ID and consumed once. The hash is provenance for the approved snapshot; L1
+remains a live file and may later change through recorded decisions.
 
 ## L2: scientific story for one direction
 
@@ -249,10 +250,13 @@ scientific-story checkpoint. Ask whether to promote the problem + core mechanism
 + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v4 L2 checkpoint stores the active direction ID, problem, core
+The schema-v5 L2 checkpoint stores the active direction ID, problem, core
 mechanism, innovation claim, external-baseline status, ceiling summary,
-approving outcome, and durable-record path. A question with outcome `reject`,
-`defer`, or `informational` cannot be used as confirmation.
+approving outcome, durable-record path, and hashed references to the nearest-
+work, external-baseline, and result records used for the decision. A queued
+approval is bound to this scientific-story ID and consumed once. A question
+with outcome `reject`, `defer`, or `informational` cannot be used as
+confirmation.
 
 ## L3: implementation and execution
 
@@ -297,13 +301,26 @@ Keep verified observation, agent interpretation, autonomous action, PI question,
 and confirmed PI decision separate. This trail records scientific ownership; it
 does not require preserving all underlying attempts or stop conditions.
 
+Each PI question has a stable decision target. Active unanswered questions use
+`PENDING_PI`. A user-deferred question uses `DEFERRED_PI`, does not count toward
+the five-question pause, and must retain a concrete revisit condition. An
+`informational` reply is appended to the question but does not resolve it. When
+the revisit condition becomes true, reopen the same question; the condition is
+not itself permission to take the dependent action.
+
+Core fields have one authority: compass, L1, L2, or paper checkpoint state.
+`frozen_by_pi` is only for additional project-specific constraints and must not
+duplicate venue, domain, task, dataset, evidence standard, scientific story, or
+headline claim.
+
 ## Legacy-state audit
 
-Schema-v1/v2/v3 states are readable, but their unstructured L1/L2 approvals are
-marked `LEGACY_CONFIRMED_NEEDS_AUDIT`. They do not satisfy schema-v4 gates until
-the user confirms a structured checkpoint containing the now-required fields.
-Run `research_queue.py audit STATE`; do not silently convert an old summary into
-new user approval.
+Schema-v1/v2/v3/v4 states are readable. Unstructured L1/L2 approvals, unscoped
+decision questions, or schema-v4 L2 checkpoints without evidence references are
+marked for audit and do not satisfy schema-v5 gates. Existing scoped approvals
+already linked from a checkpoint are migrated as consumed by that checkpoint;
+do not silently turn an unrelated old summary into new user approval. Run
+`research_queue.py audit STATE` after migration.
 
 New states retain only a bounded recent notification window. Legacy notification
 history is preserved until `compact-notifications` is explicitly run, so a

@@ -62,13 +62,34 @@ class ResearchQueueCLITest(unittest.TestCase):
         return self.root / ".codex" / "research" / "L2" / "D001.md"
 
     def add_answer(
-        self, layer: str, text: str, outcome: str = "approve", decision: str = "approved"
+        self,
+        layer: str,
+        text: str,
+        outcome: str = "approve",
+        decision: str = "approved",
+        target: str | None = None,
+        revisit_condition: str | None = None,
     ) -> str:
+        if target is None:
+            defaults = {
+                "compass": "compass:C001",
+                "direction": "direction:D001",
+                "science": "science:S001",
+                "paper": "paper:P001",
+            }
+            target = defaults.get(layer, f"{layer}:decision")
         added = self.run_cli(
-            "question", self.state, "--layer", layer, "--text", text
+            "question",
+            self.state,
+            "--layer",
+            layer,
+            "--target",
+            target,
+            "--text",
+            text,
         )
         question_id = json.loads(added.stdout)["added"]["id"]
-        self.run_cli(
+        answer_args = [
             "answer",
             self.state,
             "--id",
@@ -77,7 +98,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             decision,
             "--outcome",
             outcome,
-        )
+        ]
+        if revisit_condition is not None:
+            answer_args.extend(["--revisit-condition", revisit_condition])
+        self.run_cli(*answer_args)
         return question_id
 
     def confirm_direction(self, decision_id: str) -> None:
@@ -130,6 +154,41 @@ class ResearchQueueCLITest(unittest.TestCase):
             "key matched comparison complete",
             "--ceiling-summary",
             "promising stable gain across held sites",
+            "--nearest-work-record",
+            self.l2,
+            "--baseline-record",
+            self.l2,
+            "--result-record",
+            self.l2,
+        )
+
+    def enter_paper_ready(self, assessment: Path, ok: bool = True) -> subprocess.CompletedProcess[str]:
+        return self.run_cli(
+            "phase",
+            self.state,
+            "--set",
+            "paper_ready_pending_pi",
+            "--assessment",
+            assessment,
+            "--competitive-bar-assessment",
+            "met with a protocol-matched gain",
+            "--novelty-assessment",
+            "nearest-work difference verified",
+            "--generalization-assessment",
+            "required held-site evidence complete",
+            "--paper-ready-threshold-assessment",
+            "threshold met",
+            "--narrowest-supported-claim",
+            "a narrow supported claim",
+            "--strongest-matched-comparison",
+            "matched baseline B",
+            "--remaining-objection",
+            "limited sample size",
+            "--necessary-work",
+            "none",
+            "--optional-work",
+            "one sensitivity analysis",
+            ok=ok,
         )
 
     def test_init_creates_scaffold_and_cannot_start_late(self) -> None:
@@ -249,14 +308,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         assessment = self.root / "paper-ready.md"
         assessment.write_text("# Paper ready\n\nPASS\n", encoding="utf-8")
-        self.run_cli(
-            "phase",
-            self.state,
-            "--set",
-            "paper_ready_pending_pi",
-            "--assessment",
-            assessment,
-        )
+        self.enter_paper_ready(assessment)
         paper_q = self.add_answer("paper", "Enter writing and use this claim?")
         final = self.run_cli(
             "confirm",
@@ -286,7 +338,14 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.init_exploration()
         for index in range(5):
             self.run_cli(
-                "question", self.state, "--layer", "other", "--text", f"q{index}"
+                "question",
+                self.state,
+                "--layer",
+                "other",
+                "--target",
+                f"other:q{index}",
+                "--text",
+                f"q{index}",
             )
         result = self.run_cli(
             "phase", self.state, "--set", "confirmed_project", ok=False
@@ -303,7 +362,24 @@ class ResearchQueueCLITest(unittest.TestCase):
             "informational",
         )
         status = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertTrue(status["paused_for_pi"])
+        self.assertEqual(status["pending_macro_count"], 5)
+        self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            "Q001",
+            "--decision",
+            "ask after the baseline finishes",
+            "--outcome",
+            "defer",
+            "--revisit-condition",
+            "baseline job reaches completed or failed",
+        )
+        status = json.loads(self.run_cli("status", self.state).stdout)
         self.assertFalse(status["paused_for_pi"])
+        self.assertEqual(status["pending_macro_count"], 4)
+        self.assertEqual(status["deferred_pi_count"], 1)
 
     def test_missing_l2_record_blocks_paper_ready_transition(self) -> None:
         self.init_exploration()
@@ -314,15 +390,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.l2.unlink()
         assessment = self.root / "paper-ready.md"
         assessment.write_text("# Paper ready\n", encoding="utf-8")
-        result = self.run_cli(
-            "phase",
-            self.state,
-            "--set",
-            "paper_ready_pending_pi",
-            "--assessment",
-            assessment,
-            ok=False,
-        )
+        result = self.enter_paper_ready(assessment, ok=False)
         self.assertIn("complete L1 and L2", result.stderr)
 
     def test_legacy_v3_state_is_flagged_for_reconfirmation(self) -> None:
@@ -364,6 +432,31 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("LEGACY_DIRECTION_NEEDS_RECONFIRMATION", codes)
         self.assertIn("COMPASS_CHECKPOINT_INCOMPLETE", codes)
 
+    def test_schema_v4_science_without_evidence_refs_needs_audit(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 4
+        del state["layer_checkpoints"]["science"]["payload"]["evidence_refs"]
+        for question in state["macro_questions"]:
+            for field in (
+                "decision_target",
+                "consumed_by",
+                "responses",
+                "revisit_condition",
+                "deferred_at",
+                "reopened_at",
+            ):
+                question.pop(field, None)
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        result = self.run_cli("audit", self.state, ok=False)
+        summary = json.loads(result.stdout)
+        codes = {issue["code"] for issue in summary["control_issues"]}
+        self.assertIn("LEGACY_SCIENCE_NEEDS_RECONFIRMATION", codes)
+
     def test_direction_change_invalidates_science(self) -> None:
         self.init_exploration()
         self.confirm_direction(
@@ -401,6 +494,163 @@ class ResearchQueueCLITest(unittest.TestCase):
             summary["layer_checkpoints"]["science"]["status"].startswith("STALE_AFTER")
         )
         self.assertEqual(summary["phase"], "confirmed_project")
+
+    def test_scoped_approval_cannot_be_reused_for_another_checkpoint(self) -> None:
+        self.init_exploration()
+        direction_q = self.add_answer(
+            "direction",
+            "Choose D001?",
+            outcome="select",
+            decision="Select D001",
+        )
+        self.confirm_direction(direction_q)
+        result = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "science",
+            "--id",
+            "S001",
+            "--record",
+            self.l2,
+            "--decision-id",
+            direction_q,
+            "--direction-id",
+            "D001",
+            "--problem",
+            "problem",
+            "--core-mechanism",
+            "mechanism",
+            "--innovation-claim",
+            "claim",
+            "--external-baseline-status",
+            "matched",
+            "--ceiling-summary",
+            "summary",
+            "--nearest-work-record",
+            self.l2,
+            "--baseline-record",
+            self.l2,
+            "--result-record",
+            self.l2,
+            ok=False,
+        )
+        self.assertTrue(
+            "belongs to layer" in result.stderr
+            or "already consumed" in result.stderr
+            or "targets" in result.stderr
+        )
+
+    def test_deferred_question_requires_condition_and_can_reopen(self) -> None:
+        self.init_exploration()
+        added = self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "resource",
+            "--target",
+            "resource:gpu-rental",
+            "--text",
+            "Rent a GPU?",
+        )
+        question_id = json.loads(added.stdout)["added"]["id"]
+        missing = self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            question_id,
+            "--decision",
+            "decide later",
+            "--outcome",
+            "defer",
+            ok=False,
+        )
+        self.assertIn("requires --revisit-condition", missing.stderr)
+        self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            question_id,
+            "--decision",
+            "decide after local screening",
+            "--outcome",
+            "defer",
+            "--revisit-condition",
+            "local screen completes",
+        )
+        deferred = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertEqual(deferred["pending_macro_count"], 0)
+        self.assertEqual(deferred["deferred_pi_count"], 1)
+        self.assertEqual(
+            deferred["deferred_pi_questions"][0]["revisit_condition"],
+            "local screen completes",
+        )
+        self.run_cli("audit", self.state)
+        self.run_cli(
+            "reopen",
+            self.state,
+            "--id",
+            question_id,
+            "--reason",
+            "local screen completed",
+        )
+        reopened = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertEqual(reopened["pending_macro_count"], 1)
+        self.assertEqual(reopened["deferred_pi_count"], 0)
+
+    def test_reserved_core_field_cannot_be_duplicated_as_frozen(self) -> None:
+        self.init_exploration()
+        result = self.run_cli(
+            "freeze",
+            self.state,
+            "--key",
+            "domain",
+            "--value",
+            "NLP",
+            "--pi-decision",
+            "Change the domain",
+            "--pi-outcome",
+            "approve",
+            ok=False,
+        )
+        self.assertIn("cannot be duplicated", result.stderr)
+
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["frozen_by_pi"]["domain"] = {
+            "value": "NLP",
+            "frozen_at": "2026-01-01T00:00:00+00:00",
+            "decision_source": {
+                "type": "direct_pi_instruction",
+                "decision": "legacy duplicate",
+                "outcome": "approve",
+            },
+        }
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        audit = self.run_cli("audit", self.state, ok=False)
+        codes = {
+            issue["code"]
+            for issue in json.loads(audit.stdout)["control_issues"]
+        }
+        self.assertIn("RESERVED_FIELD_DUPLICATED_IN_FROZEN_BY_PI", codes)
+
+    def test_paper_ready_requires_structured_assessment(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+        result = self.run_cli(
+            "phase",
+            self.state,
+            "--set",
+            "paper_ready_pending_pi",
+            "--assessment",
+            assessment,
+            ok=False,
+        )
+        self.assertIn("missing structured fields", result.stderr)
 
     def test_recent_notifications_are_bounded(self) -> None:
         self.init_exploration()

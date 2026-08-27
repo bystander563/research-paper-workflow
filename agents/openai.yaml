@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Paper Workflow"
-  short_description: "Audit research gates, evidence, and PI decisions"
-  default_prompt: "Use $research-paper-workflow to audit or continue this paper project; require typed user approval at the compass, L1, L2, and paper gates, preserve L1/L2, register active jobs, and handle routine research autonomously."
+  short_description: "Track research gates, evidence links, and PI decisions"
+  default_prompt: "Use $research-paper-workflow to review or continue this paper project; bind PI approval to the exact compass, L1, L2, or paper target, preserve L1/L2, keep deferred questions visible with revisit conditions, register active jobs, and handle routine research autonomously."

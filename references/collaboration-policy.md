@@ -26,12 +26,24 @@ question preceded them. If an existing project has substantial work but lacks
 an L1 or L2 checkpoint, report the missing decision and create the next proper
 checkpoint instead of inferring consent from history.
 
-Every answer has one outcome: `select`, `approve`, `reject`, `defer`, or
-`informational`. “Answered” is not an approval state. Only `select` and
-`approve` can confirm a compass, L1, L2, paper, or additional frozen choice.
+Every reply is typed as `select`, `approve`, `reject`, `defer`, or
+`informational` internally; do not require the user to write these English
+labels. `select`, `approve`, and `reject` resolve the active question.
+`informational` records useful context but leaves the question active. `defer`
+moves the question to a visible deferred queue, removes it from the active
+five-question count, and requires a concrete revisit condition. Only `select`
+and `approve` can confirm a compass, L1, L2, paper, or additional frozen choice.
 
-`FROZEN_BY_PI` is reserved for project-specific choices beyond L1/L2. Include
-only fields the user actually fixed. When work conflicts with one:
+Give every PI question a stable decision target such as `direction:D001` or
+`science:S001`. A queued approval must match the checkpoint layer and target and
+is consumed once. One user message may explicitly decide several matters, but
+record a separate scoped receipt for each; never reuse a generic “同意继续” as
+authority for unrelated gates.
+
+`FROZEN_BY_PI` is reserved for project-specific choices beyond the compass,
+L1, L2, and paper fields. Never duplicate venue, domain, task, dataset, evidence
+standard, scientific story, or headline claim there. Include only fields the
+user actually fixed. When work conflicts with one:
 
 1. continue independent in-scope work;
 2. create one PI question explaining the conflict;
@@ -98,7 +110,9 @@ create a requirement to archive every attempt.
 
 ## Five-question stop
 
-Only unanswered PI questions count. Notifications are unlimited.
+Only active unanswered PI questions count. Notifications and deferred questions
+are unlimited by this cap. Deferred questions remain visible with their revisit
+conditions.
 
 When the fifth question is added:
 
@@ -110,6 +124,10 @@ When the fifth question is added:
 
 Resume the underlying phase when the pending count falls below five unless the
 user keeps the workflow paused.
+
+When a defer condition becomes true, run `reopen` and present that question
+again in the next decision packet. Do not silently answer it from the condition
+itself.
 
 Register long-running active work with `job-add` and update it with `job-update`
 so another context can recover its command/session and next action. The
@@ -161,11 +179,13 @@ Useful commands:
 python scripts/research_queue.py init STATE --project NAME
 python scripts/research_queue.py init STATE --project NAME --phase exploration --venue-or-window "ICASSP" --domain "sMRI" --pi-decision "用户确认投稿目标和领域" --pi-outcome select
 python scripts/research_queue.py audit STATE
-python scripts/research_queue.py question STATE --layer direction --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
+python scripts/research_queue.py question STATE --layer direction --target direction:D001 --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
 python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
+python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"
+python scripts/research_queue.py reopen STATE --id Q002 --reason "外部 baseline 复现已完成"
 python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..."
-python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..."
-python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE
+python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
+python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..."
 python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
 python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-action "..."
 python scripts/research_queue.py notify STATE --text "..."

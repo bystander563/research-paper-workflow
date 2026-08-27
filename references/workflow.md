@@ -21,9 +21,9 @@ Use these exact phase names in documentation and `research_queue.py`.
 ## Existing-project intake
 
 Run `research_queue.py audit STATE` before resuming any project with workflow
-state. Schema-v1/v2/v3 approvals without the schema-v4 structured payload are
-reported as needing reconfirmation; existing code and results do not waive that
-decision.
+state. Legacy approvals without the current structured payload or scoped
+decision receipt are reported as needing audit; existing code and results do
+not waive that decision.
 
 If no workflow state exists, inspect the active project authority and evidence
 before initializing:
@@ -94,6 +94,7 @@ Gate `G1 L1_CONFIRMED`:
   tentative, or deferred choices where applicable;
 - the exact user decision is linked from L1 and the queue checkpoint;
 - the decision outcome is `select` or `approve`, not merely “answered”;
+- a queued approval is scoped to this direction ID and consumed only here;
 - the structured checkpoint contains task, dataset, competitive bar, novelty
   sufficiency, generalization requirement, and paper-ready threshold;
 - no unresolved contradiction exists with another user-frozen field.
@@ -139,10 +140,14 @@ Gate `G2 L2_CONFIRMED`:
   innovation claim;
 - L2 links to its L1 direction, verified nearest work, external comparison, and
   decision-relevant result evidence;
+- the controller stores resolvable references to the nearest-work,
+  external-baseline, and result records used for the decision;
 - unsupported or blocked comparisons are labeled rather than treated as wins;
 - the exact user decision is linked from L2 and the queue checkpoint.
 - the decision outcome is `select` or `approve`; `reject`, `defer`, and
   `informational` cannot pass G2.
+- a queued approval is scoped to this scientific-story ID and consumed only
+  here.
 
 An implementation win or internally best variant never passes G2 by itself.
 Replacing the confirmed problem, core mechanism, or innovation claim invalidates
@@ -173,8 +178,10 @@ headline claim to use. This is a real user decision even when the agent strongly
 recommends proceeding.
 
 The transition into `paper_ready_pending_pi` requires a durable assessment
-artifact. It cannot be set at initialization or reached without complete typed
-L1/L2 checkpoints.
+artifact and a structured receipt covering every L1 criterion, the narrowest
+supported claim, strongest matched comparison, remaining objection, and
+necessary versus optional work. It cannot be set at initialization or reached
+without complete typed L1/L2 checkpoints.
 
 If approved, record a typed `paper` checkpoint containing the confirmed science
 checkpoint, headline claim, durable record, and handoff target. Only then enter
@@ -188,7 +195,9 @@ remain separate.
 
 ## Pause overlay: PAUSED_FOR_PI
 
-Only unanswered PI decisions count toward the cap. Notifications do not.
+Only active unanswered PI decisions count toward the cap. Notifications and
+user-deferred decisions do not. A deferred item remains visible with a recorded
+revisit condition and returns to the active queue when that condition is met.
 
 At five unanswered PI decisions:
 
@@ -222,7 +231,10 @@ not schedule, poll, or terminate the process by itself.
 
 ## Control audit
 
-`research_queue.py audit STATE` fails when the current phase lacks a complete
-typed checkpoint, a durable record is missing, a paper-ready assessment is
-absent, a legacy approval needs reconfirmation, or an active job cannot be
-resumed. Run it at startup, after migration, and before paper handoff.
+`research_queue.py audit STATE` is a control-state audit. It fails when the
+current phase lacks a complete typed checkpoint, a decision receipt is unscoped
+or incorrectly reused, a core field has conflicting authorities, a required
+evidence reference or durable record is missing, a paper-ready assessment is
+incomplete, a legacy approval needs audit, or an active job cannot be resumed.
+It verifies provenance and availability, not scientific adequacy. Run it at
+startup, after migration, and before paper handoff.

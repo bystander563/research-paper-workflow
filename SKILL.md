@@ -50,9 +50,12 @@ Use these files by purpose:
   within the confirmed direction.
 - Silence or a 20-minute timeout grants no new authority. Record direct user
   decisions; do not infer approval from existing code or experiments.
-- An answered question is not automatically an approval. Record `select`,
-  `approve`, `reject`, `defer`, or `informational`; only `select` and `approve`
-  can confirm a checkpoint.
+- Give every PI question a stable decision target. `select`, `approve`, and
+  `reject` resolve the question. `informational` adds context but leaves the
+  decision active. `defer` moves it out of the active five-question count into
+  a visible deferred queue and requires a condition for asking again. Only
+  `select` and `approve` can confirm a checkpoint, and a queued approval is
+  bound to one target and consumed once.
 - L1 and L2 are durable scientific state. Keep their current facts, user
   decisions, replacements, and decision-relevant evidence. They are not
   chronological dumps of every attempt.
@@ -66,6 +69,10 @@ Use these files by purpose:
 - This skill creates no generic test-set, sealed-set, external-label, metric,
   second-dataset, or unexposed-dataset protocol. Record such requirements in L1
   only when the user or active project adopts them.
+- Compass, L1, L2, and paper fields have one source of truth in their typed
+  checkpoints. Use `frozen_by_pi` only for additional project-specific choices;
+  never duplicate core fields such as venue, domain, task, dataset, evidence
+  standard, scientific story, or headline claim there.
 
 ## Activate and resume
 
@@ -77,8 +84,11 @@ target venue plus the research domain. A starting concept is optional and is a
 seed unless the user explicitly freezes it.
 
 For a long-running project, run `scripts/research_queue.py audit STATE` before
-resuming. Treat any incomplete or legacy checkpoint as unresolved even if old
-code or experiments exist. Do not reconstruct approval from chat memory.
+resuming. This is a control-state audit: it checks authority, scoped decisions,
+checkpoint links, required evidence references, and resumable files, but it does
+not decide whether a contribution is scientifically adequate. Treat any
+incomplete or legacy checkpoint as unresolved even if old code or experiments
+exist. Do not reconstruct approval from chat memory.
 
 For an existing project without this state, first classify its maturity. If the
 task, method, main experiment package, and manuscript direction are already
@@ -129,9 +139,9 @@ evidence gaps, and the agent's recommendation. The best internal variant does
 not become the scientific story automatically. Replacing a confirmed L2 story
 requires another PI decision.
 
-Record L2 with a typed approving outcome and a durable L2 record. A rejected or
-deferred method remains unconfirmed regardless of whether the question was
-answered.
+Record L2 with a typed approving outcome, a durable L2 record, and resolvable
+references to the nearest-work, external-baseline, and result evidence used in
+the decision. A rejected or deferred method remains unconfirmed.
 
 ### Paper decision
 
@@ -142,9 +152,11 @@ headline claim should be. If approved, hand off the fixed L1/L2 evidence package
 to a paper-submission workflow; do not silently start a different scientific
 story during writing.
 
-Before asking, create a paper-ready assessment artifact. Record the exact paper
-decision as the `paper` checkpoint; only then may the controller enter
-`paper_handoff_approved`.
+Before asking, create a paper-ready assessment artifact. The controller receipt
+must explicitly assess every L1 evidence criterion and record the narrowest
+claim, strongest matched comparison, remaining objection, and necessary versus
+optional work. Record the exact paper decision as the `paper` checkpoint; only
+then may the controller enter `paper_handoff_approved`.
 
 ## External-baseline gate
 
@@ -205,9 +217,11 @@ Important events are notifications rather than questions. Explain them as:
 
 Send questions as they arise and continue independent authorized work. After 20
 minutes, keep an unanswered question queued and batch it with later questions;
-do not infer consent. At five unanswered PI decisions, set `PAUSED_FOR_PI` and
-stop at the next safe checkpoint. Do not kill an already-running atomic process
-unless the user requests a hard stop.
+do not infer consent. A deferred question leaves the active count only after the
+user defers it and a revisit condition is recorded; reopen it when that condition
+is met. At five active unanswered PI decisions, set `PAUSED_FOR_PI` and stop at
+the next safe checkpoint. Do not kill an already-running atomic process unless
+the user requests a hard stop.
 
 Register each active long-running process with its command or session ID, state,
 next poll, and next action. Remove completed job records when no longer useful.

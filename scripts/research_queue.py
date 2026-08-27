@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Control durable PI decisions and resumable work for research-paper-workflow.
 
-The controller enforces typed approvals, ordered scientific checkpoints, the
-five-question pause, lightweight active-job recovery, and project-state audits.
-It records authority; it does not create authority, schedule itself, or kill
-processes.
+The controller enforces scoped typed approvals, ordered scientific checkpoints,
+active/deferred PI queues, the five-question pause, evidence-record links,
+lightweight active-job recovery, and control-state audits. It records authority
+and artifact availability; it does not judge scientific adequacy, create
+authority, schedule itself, or kill processes.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 4
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4}
+SCHEMA_VERSION = 5
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5}
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -45,6 +46,55 @@ VALID_PHASES = {
 }
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 JOB_STATUSES = ACTIVE_JOB_STATUSES | {"completed", "failed", "cancelled", "blocked"}
+PAPER_ASSESSMENT_FIELDS = (
+    "competitive_bar_assessment",
+    "novelty_assessment",
+    "generalization_assessment",
+    "paper_ready_threshold_assessment",
+    "narrowest_supported_claim",
+    "strongest_matched_comparison",
+    "remaining_objection",
+    "necessary_work",
+    "optional_work",
+)
+RESERVED_FROZEN_KEYS = {
+    "venue",
+    "venue_or_window",
+    "submission_window",
+    "conference",
+    "domain",
+    "starting_concept",
+    "task",
+    "task_type",
+    "dataset",
+    "dataset_bundle",
+    "competitive_bar",
+    "novelty_sufficiency",
+    "generalization_requirement",
+    "second_dataset_requirement",
+    "paper_ready_threshold",
+    "problem",
+    "core_mechanism",
+    "innovation_claim",
+    "headline_claim",
+    "会议",
+    "投稿时间",
+    "投稿会议",
+    "领域",
+    "初始构想",
+    "任务",
+    "任务类型",
+    "数据集",
+    "竞争目标",
+    "创新标准",
+    "泛化要求",
+    "第二数据集要求",
+    "论文就绪条件",
+    "问题",
+    "核心机制",
+    "创新点",
+    "论文主张",
+}
 
 
 def now_iso() -> str:
@@ -137,6 +187,40 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
         state.setdefault("jobs", [])
         for question in state.setdefault("macro_questions", []):
             question.setdefault("outcome", None)
+    if version in {1, 2, 3, 4}:
+        for question in state.setdefault("macro_questions", []):
+            question.setdefault("decision_target", None)
+            question.setdefault("consumed_by", None)
+            question.setdefault("responses", [])
+            question.setdefault("revisit_condition", None)
+            question.setdefault("deferred_at", None)
+            question.setdefault("reopened_at", None)
+        checkpoints = state.setdefault("layer_checkpoints", {})
+        for layer in CHECKPOINT_LAYERS:
+            checkpoint = checkpoints.setdefault(layer, empty_checkpoint())
+            source = checkpoint.get("decision_source") or {}
+            question_id = source.get("question_id")
+            if not question_id:
+                continue
+            matches = [
+                q for q in state["macro_questions"] if q.get("id") == question_id
+            ]
+            if not matches:
+                continue
+            question = matches[0]
+            target = f"{layer}:{checkpoint.get('id')}"
+            question["decision_target"] = question.get("decision_target") or target
+            question["consumed_by"] = question.get("consumed_by") or {
+                "type": "checkpoint",
+                "layer": layer,
+                "id": checkpoint.get("id"),
+                "migrated_at": now_iso(),
+            }
+        science = checkpoints.get("science", {})
+        if science.get("status") == "CONFIRMED_BY_PI":
+            payload = science.get("payload") or {}
+            if not payload.get("evidence_refs"):
+                science["status"] = "LEGACY_CONFIRMED_NEEDS_AUDIT"
         state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -222,6 +306,17 @@ def normalize_record(path: Path, raw: str) -> tuple[Path, str, str]:
     return record, stored, sha256_file(record)
 
 
+def evidence_reference(state_path: Path, raw: str, label: str) -> dict[str, str]:
+    if not str(raw or "").strip():
+        raise SystemExit(f"Science confirmation requires --{label.replace('_', '-')}")
+    _, stored, digest = normalize_record(state_path, raw)
+    return {"path": stored, "sha256_at_confirmation": digest}
+
+
+def normalized_frozen_key(raw: str) -> str:
+    return str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+
+
 def append_checkpoint_receipt(
     record: Path,
     layer: str,
@@ -235,6 +330,19 @@ def append_checkpoint_receipt(
         f"- Decision outcome: `{source['outcome']}`\n"
         f"- User decision: {source['decision']}\n"
         "- Structured payload:\n\n"
+        "```json\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n```\n"
+    )
+    with record.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(receipt)
+
+
+def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> None:
+    receipt = (
+        "\n\n## Paper-ready control assessment\n\n"
+        f"- Recorded at: {now_iso()}\n"
+        "- Structured assessment:\n\n"
         "```json\n"
         + json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
         + "\n```\n"
@@ -356,6 +464,10 @@ def active_questions(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [q for q in state["macro_questions"] if q.get("status") == "PENDING_PI"]
 
 
+def deferred_questions(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [q for q in state["macro_questions"] if q.get("status") == "DEFERRED_PI"]
+
+
 def refresh_pause(state: dict[str, Any]) -> None:
     count = len(active_questions(state))
     state["paused_for_pi"] = count >= MAX_MACRO_QUESTIONS
@@ -426,6 +538,14 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
         )
         if any(not standard.get(key) for key in keys):
             return False
+    if layer == "science":
+        evidence_refs = payload.get("evidence_refs")
+        if not isinstance(evidence_refs, dict):
+            return False
+        for key in ("nearest_work", "external_baselines", "results"):
+            ref = evidence_refs.get(key)
+            if not isinstance(ref, dict) or not ref.get("path"):
+                return False
     return bool(checkpoint.get("record_path"))
 
 
@@ -435,7 +555,16 @@ def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bo
     record = resolve_stored_path(
         state_path, state["layer_checkpoints"][layer].get("record_path")
     )
-    return bool(record and record.is_file())
+    if not record or not record.is_file():
+        return False
+    if layer == "science":
+        refs = state["layer_checkpoints"][layer]["payload"]["evidence_refs"]
+        for name in ("nearest_work", "external_baselines", "results"):
+            ref = refs[name]
+            evidence_path = resolve_stored_path(state_path, ref.get("path"))
+            if not evidence_path or not evidence_path.is_file():
+                return False
+    return True
 
 
 def required_layers_for_phase(phase: str) -> tuple[str, ...]:
@@ -472,13 +601,27 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0",
                 "Paper-ready phase requires a recorded assessment artifact",
             )
+        elif any(not assessment.get(field) for field in PAPER_ASSESSMENT_FIELDS):
+            add(
+                "PAPER_READY_ASSESSMENT_INCOMPLETE",
+                "P0",
+                "Paper-ready assessment must explicitly cover the L1 criteria and claim risks",
+            )
+        else:
+            assessment_path = resolve_stored_path(state_path, assessment.get("path"))
+            if not assessment_path or not assessment_path.is_file():
+                add(
+                    "PAPER_READY_ASSESSMENT_RECORD_MISSING",
+                    "P0",
+                    "Paper-ready assessment record is unavailable",
+                )
     for layer in CHECKPOINT_LAYERS:
         checkpoint = state["layer_checkpoints"].get(layer, {})
         if checkpoint.get("status") == "LEGACY_CONFIRMED_NEEDS_AUDIT":
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload required by schema v4",
+                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v5",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -488,6 +631,114 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 f"{layer.upper()}_RECORD_MISSING",
                 "P0",
                 f"Confirmed {layer} checkpoint has no available durable record",
+            )
+        if checkpoint.get("status") == "CONFIRMED_BY_PI" and not checkpoint_complete(
+            state, layer
+        ):
+            add(
+                f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
+                "P0",
+                f"Confirmed {layer} checkpoint lacks required schema-v5 control fields",
+            )
+        source = checkpoint.get("decision_source") or {}
+        if checkpoint.get("status") == "CONFIRMED_BY_PI" and source.get(
+            "type"
+        ) == "answered_question":
+            matches = [
+                q
+                for q in state["macro_questions"]
+                if q.get("id") == source.get("question_id")
+            ]
+            expected = {
+                "type": "checkpoint",
+                "layer": layer,
+                "id": checkpoint.get("id"),
+            }
+            if not matches or any(
+                (matches[0].get("consumed_by") or {}).get(key) != value
+                for key, value in expected.items()
+            ):
+                add(
+                    f"{layer.upper()}_DECISION_RECEIPT_NOT_BOUND",
+                    "P0",
+                    f"Confirmed {layer} checkpoint is not bound to a single scoped PI decision",
+                )
+    direction = state["layer_checkpoints"].get("direction", {})
+    science = state["layer_checkpoints"].get("science", {})
+    paper = state["layer_checkpoints"].get("paper", {})
+    if science.get("status") == "CONFIRMED_BY_PI":
+        if (science.get("payload") or {}).get("direction_id") != direction.get("id"):
+            add(
+                "SCIENCE_DIRECTION_LINK_MISMATCH",
+                "P0",
+                "Confirmed science checkpoint does not reference the active L1 direction",
+            )
+        raw_refs = (science.get("payload") or {}).get("evidence_refs")
+        refs = raw_refs if isinstance(raw_refs, dict) else {}
+        for name, ref in refs.items():
+            if not isinstance(ref, dict):
+                add(
+                    "SCIENCE_EVIDENCE_RECORD_INVALID",
+                    "P0",
+                    f"Science evidence record {name!r} is not a structured reference",
+                )
+                continue
+            evidence_path = resolve_stored_path(state_path, ref.get("path"))
+            if not evidence_path or not evidence_path.is_file():
+                add(
+                    "SCIENCE_EVIDENCE_RECORD_MISSING",
+                    "P0",
+                    f"Science evidence record {name!r} is unavailable",
+                )
+    if paper.get("status") == "CONFIRMED_BY_PI" and (
+        (paper.get("payload") or {}).get("science_id") != science.get("id")
+    ):
+        add(
+            "PAPER_SCIENCE_LINK_MISMATCH",
+            "P0",
+            "Confirmed paper checkpoint does not reference the active L2 story",
+        )
+    assessment = state.get("paper_ready_assessment") or {}
+    if assessment and (
+        assessment.get("direction_id") != direction.get("id")
+        or assessment.get("science_id") != science.get("id")
+    ):
+        add(
+            "PAPER_ASSESSMENT_LINK_MISMATCH",
+            "P0",
+            "Paper-ready assessment is not tied to the active L1/L2 checkpoints",
+        )
+    for key in state.get("frozen_by_pi", {}):
+        if normalized_frozen_key(key) in RESERVED_FROZEN_KEYS:
+            add(
+                "RESERVED_FIELD_DUPLICATED_IN_FROZEN_BY_PI",
+                "P0",
+                f"Core scientific field {key!r} must live only in compass/L1/L2 state",
+            )
+    active_targets: set[str] = set()
+    for question in active_questions(state) + deferred_questions(state):
+        target = str(question.get("decision_target") or "").strip()
+        if not target:
+            add(
+                "UNSCOPED_PI_QUESTION",
+                "P1",
+                f"PI question {question.get('id')} has no stable decision target",
+            )
+            continue
+        if target in active_targets:
+            add(
+                "DUPLICATE_PI_DECISION_TARGET",
+                "P1",
+                f"Multiple open PI questions use target {target!r}",
+            )
+        active_targets.add(target)
+        if question.get("status") == "DEFERRED_PI" and not question.get(
+            "revisit_condition"
+        ):
+            add(
+                "DEFERRED_QUESTION_WITHOUT_REVISIT_CONDITION",
+                "P1",
+                f"Deferred PI question {question.get('id')} lacks a revisit condition",
             )
     l1_path = research_root_for_state(state_path) / "L1-directions.md"
     if state["phase"] != "discussion" and not l1_path.is_file():
@@ -527,6 +778,7 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
                 "id": question["id"],
                 "priority": question.get("priority", "medium"),
                 "layer": question.get("layer", "other"),
+                "decision_target": question.get("decision_target"),
                 "text": question["text"],
                 "reason": question.get("reason", ""),
                 "recommendation": question.get("recommendation", ""),
@@ -538,6 +790,36 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
     active_jobs = [
         job for job in state.get("jobs", []) if job.get("status") in ACTIVE_JOB_STATUSES
     ]
+    deferred = [
+        {
+            "id": question.get("id"),
+            "priority": question.get("priority", "medium"),
+            "layer": question.get("layer", "other"),
+            "decision_target": question.get("decision_target"),
+            "text": question.get("text"),
+            "revisit_condition": question.get("revisit_condition"),
+            "deferred_at": question.get("deferred_at"),
+        }
+        for question in sorted(
+            deferred_questions(state),
+            key=lambda q: (
+                PRIORITY_ORDER.get(str(q.get("priority", "medium")), 1),
+                str(q.get("deferred_at", "")),
+            ),
+        )
+    ]
+    unused_approvals = [
+        {
+            "id": question.get("id"),
+            "decision_target": question.get("decision_target"),
+            "decision": question.get("decision"),
+            "outcome": question.get("outcome"),
+        }
+        for question in state["macro_questions"]
+        if question.get("status") == "ANSWERED"
+        and question.get("outcome") in APPROVING_OUTCOMES
+        and not question.get("consumed_by")
+    ]
     issues = audit_state(state_path, state)
     return {
         "schema_version": state["schema_version"],
@@ -547,6 +829,9 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "paused_for_pi": state["paused_for_pi"],
         "pending_macro_count": len(pending),
         "pending_macro_questions": pending,
+        "deferred_pi_count": len(deferred),
+        "deferred_pi_questions": deferred,
+        "unused_approvals": unused_approvals,
         "layer_checkpoints": state["layer_checkpoints"],
         "missing_required_checkpoints": [
             layer
@@ -640,12 +925,23 @@ def cmd_question(args: argparse.Namespace) -> None:
             "Cannot add another PI decision question: five are already pending. "
             "The workflow is PAUSED_FOR_PI until at least one is answered."
         )
-    if any(q.get("text") == args.text for q in pending):
-        raise SystemExit("An identical PI decision question is already pending")
+    target = str(args.target).strip()
+    if not target:
+        raise SystemExit("A PI decision question requires a stable --target")
+    open_questions = active_questions(state) + deferred_questions(state)
+    if any(q.get("decision_target") == target for q in open_questions):
+        raise SystemExit(f"A PI question already exists for decision target: {target}")
+    if any(q.get("text") == args.text for q in open_questions):
+        raise SystemExit("An identical PI decision question is already open")
+    if args.layer in CHECKPOINT_LAYERS and not target.startswith(f"{args.layer}:"):
+        raise SystemExit(
+            f"A {args.layer} question target must start with {args.layer}:"
+        )
     question = {
         "id": next_id(state["macro_questions"], "Q"),
         "status": "PENDING_PI",
         "layer": args.layer,
+        "decision_target": target,
         "text": args.text,
         "priority": args.priority,
         "reason": args.reason,
@@ -655,6 +951,11 @@ def cmd_question(args: argparse.Namespace) -> None:
         "answered_at": None,
         "decision": None,
         "outcome": None,
+        "responses": [],
+        "revisit_condition": None,
+        "deferred_at": None,
+        "reopened_at": None,
+        "consumed_by": None,
     }
     state["macro_questions"].append(question)
     refresh_pause(state)
@@ -675,17 +976,81 @@ def cmd_answer(args: argparse.Namespace) -> None:
     if not matches:
         raise SystemExit(f"Question not found: {args.id}")
     question = matches[0]
-    if question.get("status") != "PENDING_PI":
-        raise SystemExit(f"Question is not pending: {args.id}")
-    question["status"] = "ANSWERED"
-    question["decision"] = args.decision
-    question["outcome"] = args.outcome
-    question["answered_at"] = now_iso()
+    if question.get("status") not in {"PENDING_PI", "DEFERRED_PI"}:
+        raise SystemExit(f"Question is not open: {args.id}")
+    response = {
+        "text": args.decision,
+        "outcome": args.outcome,
+        "created_at": now_iso(),
+    }
+    question.setdefault("responses", []).append(response)
+    if args.outcome == "informational":
+        refresh_pause(state)
+        save_state(path, state)
+        print(
+            json.dumps(
+                {"recorded_information": response, "question": question, "state": state_summary(path, state)},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    if args.outcome == "defer":
+        revisit = str(args.revisit_condition or "").strip()
+        if not revisit:
+            raise SystemExit("A deferred decision requires --revisit-condition")
+        question["status"] = "DEFERRED_PI"
+        question["decision"] = args.decision
+        question["outcome"] = "defer"
+        question["answered_at"] = None
+        question["deferred_at"] = now_iso()
+        question["revisit_condition"] = revisit
+    else:
+        question["status"] = "ANSWERED"
+        question["decision"] = args.decision
+        question["outcome"] = args.outcome
+        question["answered_at"] = now_iso()
     refresh_pause(state)
     save_state(path, state)
     print(
         json.dumps(
             {"answered": question, "state": state_summary(path, state)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def cmd_reopen(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    if len(active_questions(state)) >= MAX_MACRO_QUESTIONS:
+        raise SystemExit(
+            "Cannot reopen a deferred question while five PI decisions are active"
+        )
+    matches = [q for q in state["macro_questions"] if q.get("id") == args.id]
+    if not matches:
+        raise SystemExit(f"Question not found: {args.id}")
+    question = matches[0]
+    if question.get("status") != "DEFERRED_PI":
+        raise SystemExit(f"Question is not deferred: {args.id}")
+    question.setdefault("responses", []).append(
+        {
+            "text": str(args.reason or "Revisit condition reached"),
+            "outcome": "reopened",
+            "created_at": now_iso(),
+        }
+    )
+    question["status"] = "PENDING_PI"
+    question["decision"] = None
+    question["outcome"] = None
+    question["answered_at"] = None
+    question["reopened_at"] = now_iso()
+    refresh_pause(state)
+    save_state(path, state)
+    print(
+        json.dumps(
+            {"reopened": question, "state": state_summary(path, state)},
             ensure_ascii=False,
             indent=2,
         )
@@ -762,10 +1127,21 @@ def approving_decision_source(
         if question.get("status") != "ANSWERED" or not question.get("decision"):
             raise SystemExit(f"Decision question is not answered: {args.decision_id}")
         question_layer = question.get("layer", "other")
-        if question_layer not in {"other", layer}:
+        if question_layer != layer:
             raise SystemExit(
                 f"Question {args.decision_id} belongs to layer "
                 f"{question_layer!r}, not {layer!r}"
+            )
+        expected_target = f"{layer}:{args.id}"
+        if question.get("decision_target") != expected_target:
+            raise SystemExit(
+                f"Question {args.decision_id} targets "
+                f"{question.get('decision_target')!r}, not {expected_target!r}"
+            )
+        if question.get("consumed_by"):
+            raise SystemExit(
+                f"Question {args.decision_id} approval was already consumed by "
+                f"{question.get('consumed_by')}"
             )
         outcome = question.get("outcome")
         if outcome not in APPROVING_OUTCOMES:
@@ -788,6 +1164,20 @@ def approving_decision_source(
         "decision": direct_decision,
         "outcome": args.pi_outcome,
     }
+
+
+def consume_question(
+    state: dict[str, Any], decision_id: str | None, consumer: dict[str, str]
+) -> None:
+    if not decision_id:
+        return
+    matches = [q for q in state["macro_questions"] if q.get("id") == decision_id]
+    if not matches:
+        raise SystemExit(f"Decision question not found: {decision_id}")
+    question = matches[0]
+    if question.get("consumed_by"):
+        raise SystemExit(f"Decision question was already consumed: {decision_id}")
+    question["consumed_by"] = {**consumer, "consumed_at": now_iso()}
 
 
 def checkpoint_payload(
@@ -846,6 +1236,17 @@ def checkpoint_payload(
             raise SystemExit("Cannot confirm science before a complete L1 direction")
         if args.direction_id != direction.get("id"):
             raise SystemExit("--direction-id must match the active confirmed direction")
+        required["evidence_refs"] = {
+            "nearest_work": evidence_reference(
+                state_path, args.nearest_work_record, "nearest_work_record"
+            ),
+            "external_baselines": evidence_reference(
+                state_path, args.baseline_record, "baseline_record"
+            ),
+            "results": evidence_reference(
+                state_path, args.result_record, "result_record"
+            ),
+        }
         return required
     if args.layer == "paper":
         required = {
@@ -923,6 +1324,11 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         )
     update_record_placeholders(record, args.layer, args.id, payload, source)
     append_checkpoint_receipt(record, args.layer, args.id, payload, source)
+    consume_question(
+        state,
+        args.decision_id,
+        {"type": "checkpoint", "layer": args.layer, "id": args.id},
+    )
     digest = sha256_file(record)
     summary = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     state["layer_checkpoints"][args.layer] = {
@@ -984,11 +1390,26 @@ def cmd_phase(args: argparse.Namespace) -> None:
             raise SystemExit("Cannot enter paper-ready phase before complete L1 and L2 checkpoints")
         if not args.assessment:
             raise SystemExit("Entering paper-ready phase requires --assessment")
-        _, stored, digest = normalize_record(path, args.assessment)
+        missing = [
+            field for field in PAPER_ASSESSMENT_FIELDS if not getattr(args, field)
+        ]
+        if missing:
+            raise SystemExit(
+                "Paper-ready assessment is missing structured fields: "
+                + ", ".join(missing)
+            )
+        record, stored, _ = normalize_record(path, args.assessment)
+        assessment_payload = {
+            "direction_id": state["layer_checkpoints"]["direction"].get("id"),
+            "science_id": state["layer_checkpoints"]["science"].get("id"),
+            **{field: getattr(args, field) for field in PAPER_ASSESSMENT_FIELDS},
+        }
+        append_paper_assessment_receipt(record, assessment_payload)
         state["paper_ready_assessment"] = {
             "path": stored,
-            "sha256_at_gate": digest,
+            "sha256_at_gate": sha256_file(record),
             "recorded_at": now_iso(),
+            **assessment_payload,
         }
     if current == "paper_ready_pending_pi" and target == "confirmed_project":
         state["paper_ready_assessment"] = None
@@ -1007,6 +1428,14 @@ def decision_source_for_freeze(state: dict[str, Any], args: argparse.Namespace) 
             raise SystemExit(f"Decision question is not answered: {args.decision_id}")
         if question.get("outcome") not in APPROVING_OUTCOMES:
             raise SystemExit("A rejected, deferred, or informational answer cannot freeze a field")
+        expected_target = f"frozen:{args.key}"
+        if question.get("decision_target") != expected_target:
+            raise SystemExit(
+                f"Question {args.decision_id} targets "
+                f"{question.get('decision_target')!r}, not {expected_target!r}"
+            )
+        if question.get("consumed_by"):
+            raise SystemExit(f"Decision question was already consumed: {args.decision_id}")
         return {
             "type": "answered_question",
             "question_id": args.decision_id,
@@ -1027,6 +1456,11 @@ def decision_source_for_freeze(state: dict[str, Any], args: argparse.Namespace) 
 def cmd_freeze(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
+    if normalized_frozen_key(args.key) in RESERVED_FROZEN_KEYS:
+        raise SystemExit(
+            "Core compass/L1/L2 fields cannot be duplicated in frozen_by_pi; "
+            "update the corresponding checkpoint instead"
+        )
     source = decision_source_for_freeze(state, args)
     previous = state["frozen_by_pi"].get(args.key)
     if previous is not None and previous.get("value") == args.value:
@@ -1047,6 +1481,11 @@ def cmd_freeze(args: argparse.Namespace) -> None:
         "frozen_at": now_iso(),
         "decision_source": source,
     }
+    consume_question(
+        state,
+        args.decision_id,
+        {"type": "frozen_field", "key": args.key, "action": "freeze"},
+    )
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
 
@@ -1068,6 +1507,11 @@ def cmd_unfreeze(args: argparse.Namespace) -> None:
         }
     )
     del state["frozen_by_pi"][args.key]
+    consume_question(
+        state,
+        args.decision_id,
+        {"type": "frozen_field", "key": args.key, "action": "unfreeze"},
+    )
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
 
@@ -1167,6 +1611,7 @@ def build_parser() -> argparse.ArgumentParser:
     question_parser = subparsers.add_parser("question", help="Add a PI decision question")
     question_parser.add_argument("state")
     question_parser.add_argument("--text", required=True)
+    question_parser.add_argument("--target", required=True)
     question_parser.add_argument("--layer", choices=sorted(QUESTION_LAYERS), default="other")
     question_parser.add_argument("--priority", choices=sorted(PRIORITY_ORDER), default="medium")
     question_parser.add_argument("--reason", default="")
@@ -1179,7 +1624,16 @@ def build_parser() -> argparse.ArgumentParser:
     answer_parser.add_argument("--id", required=True)
     answer_parser.add_argument("--decision", required=True)
     answer_parser.add_argument("--outcome", required=True, choices=sorted(DECISION_OUTCOMES))
+    answer_parser.add_argument("--revisit-condition")
     answer_parser.set_defaults(func=cmd_answer)
+
+    reopen_parser = subparsers.add_parser(
+        "reopen", help="Move a deferred PI decision back to the active queue"
+    )
+    reopen_parser.add_argument("state")
+    reopen_parser.add_argument("--id", required=True)
+    reopen_parser.add_argument("--reason", default="")
+    reopen_parser.set_defaults(func=cmd_reopen)
 
     notify_parser = subparsers.add_parser("notify", help="Record a recent non-blocking notification")
     notify_parser.add_argument("state")
@@ -1197,6 +1651,15 @@ def build_parser() -> argparse.ArgumentParser:
     phase_parser.add_argument("state")
     phase_parser.add_argument("--set", required=True, choices=sorted(VALID_PHASES))
     phase_parser.add_argument("--assessment")
+    phase_parser.add_argument("--competitive-bar-assessment")
+    phase_parser.add_argument("--novelty-assessment")
+    phase_parser.add_argument("--generalization-assessment")
+    phase_parser.add_argument("--paper-ready-threshold-assessment")
+    phase_parser.add_argument("--narrowest-supported-claim")
+    phase_parser.add_argument("--strongest-matched-comparison")
+    phase_parser.add_argument("--remaining-objection")
+    phase_parser.add_argument("--necessary-work")
+    phase_parser.add_argument("--optional-work")
     phase_parser.set_defaults(func=cmd_phase)
 
     confirm_parser = subparsers.add_parser(
@@ -1222,6 +1685,9 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_parser.add_argument("--innovation-claim")
     confirm_parser.add_argument("--external-baseline-status")
     confirm_parser.add_argument("--ceiling-summary")
+    confirm_parser.add_argument("--nearest-work-record")
+    confirm_parser.add_argument("--baseline-record")
+    confirm_parser.add_argument("--result-record")
     confirm_parser.add_argument("--science-id")
     confirm_parser.add_argument("--headline-claim")
     confirm_parser.add_argument("--handoff-target")
