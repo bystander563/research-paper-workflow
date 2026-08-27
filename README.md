@@ -2,7 +2,7 @@
 
 [![skills.sh](https://skills.sh/b/bystander563/research-paper-workflow)](https://skills.sh/b/bystander563/research-paper-workflow)
 
-A Codex skill for autonomous, PI-in-the-loop paper research: scout meaningful task–dataset pairs, audit nearest work, derive problem-driven methods, screen candidates cheaply, tune promising methods toward their current-project ceiling, and preserve decisions across long experiment cycles.
+A Codex skill for autonomous, PI-in-the-loop paper research: scout meaningful task–dataset pairs, compare against real external methods, derive problem-driven methods, tune promising candidates toward their current-project ceiling, and preserve scientific decisions across long experiment cycles.
 
 The skill keeps scientific ownership with the user. It distinguishes ordinary autonomous work from the small set of decisions that genuinely require PI approval.
 
@@ -10,6 +10,10 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 
 - starts exploration from a user-confirmed venue or timeline, domain, and optional idea;
 - evaluates task meaning, task–dataset fit, benchmark headroom, nearest-work novelty, observed failure, intuition, and mathematical fit;
+- keeps three linked layers: L1 task and dataset direction, L2 scientific story and evidence, and L3 code and execution;
+- requires the user to confirm the L1 direction and later promote the L2 problem, core mechanism, and innovation claim;
+- requires a dataset-origin reference, a recent strong comparable method, another published mechanism, and a strong simple baseline before paper-level claims;
+- separates external baselines, the proposed method, and internal variants instead of treating “ours versus ours” as competitiveness evidence;
 - avoids engineering-heavy module stacks without a coherent mechanism;
 - uses existing GPU compute by default and never rents paid compute without approval;
 - tunes only candidates with credible potential and reports their observed ceiling plainly;
@@ -50,17 +54,23 @@ For long-running work, the skill can maintain:
 
 ```text
 <project>/.codex/research-paper-workflow.json
-<project>/.codex/research-ledger.md
+<project>/.codex/research/L1-directions.md
+<project>/.codex/research/L2/D001.md
+<project>/.codex/research/L3/D001.md
 ```
 
-The JSON helper tracks PI decisions, notifications, workflow pause state, and frozen-field history. The research ledger records the research compass, candidates, verified nearest work, decision-relevant experiments, ceiling reports, and next actions.
+The JSON helper tracks PI questions, the confirmed L1/L2 checkpoints, notifications, pause state, and frozen-field history. The layered record keeps portfolio choices, scientific comparisons, and engineering details separate while linking every claim to literature, results, and implementation evidence.
+
+Existing projects may retain `.codex/research-ledger.md` as read-only history and create the layered files at the next material checkpoint.
 
 ## Queue helper
 
 ```powershell
 python scripts/research_queue.py init STATE --project NAME --phase exploration
-python scripts/research_queue.py question STATE --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
+python scripts/research_queue.py question STATE --layer direction --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
 python scripts/research_queue.py answer STATE --id Q001 --decision "..."
+python scripts/research_queue.py confirm STATE --layer direction --id D001 --summary "task=...; dataset=..." --decision-id Q001
+python scripts/research_queue.py confirm STATE --layer science --id S001 --summary "problem=...; mechanism=...; claim=..." --pi-decision "把这个作为主线"
 python scripts/research_queue.py freeze STATE --key dataset --value "..." --pi-decision "用户确认这个数据集"
 python scripts/research_queue.py status STATE
 ```

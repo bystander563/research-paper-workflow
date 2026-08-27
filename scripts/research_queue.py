@@ -16,16 +16,28 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS = {1, 2}
+SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3}
 MAX_MACRO_QUESTIONS = 5
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+QUESTION_LAYERS = {"direction", "science", "paper", "resource", "external", "other"}
+CHECKPOINT_LAYERS = {"direction", "science"}
 VALID_PHASES = {
     "discussion",
     "exploration",
     "confirmed_project",
     "paper_ready_pending_pi",
 }
+
+
+def empty_checkpoint() -> dict[str, Any]:
+    return {
+        "status": "UNSET",
+        "id": None,
+        "summary": None,
+        "confirmed_at": None,
+        "decision_source": None,
+    }
 
 
 def now_iso() -> str:
@@ -41,6 +53,11 @@ def initial_state(project: str, phase: str) -> dict[str, Any]:
         "paused_for_pi": False,
         "frozen_by_pi": {},
         "frozen_history": [],
+        "layer_checkpoints": {
+            "direction": empty_checkpoint(),
+            "science": empty_checkpoint(),
+        },
+        "checkpoint_history": [],
         "macro_questions": [],
         "notifications": [],
         "created_at": now_iso(),
@@ -63,12 +80,23 @@ def load_state(path: Path) -> dict[str, Any]:
         )
     if version == 1:
         state.setdefault("frozen_history", [])
+    if version in {1, 2}:
+        state.setdefault(
+            "layer_checkpoints",
+            {
+                "direction": empty_checkpoint(),
+                "science": empty_checkpoint(),
+            },
+        )
+        state.setdefault("checkpoint_history", [])
         state["schema_version"] = SCHEMA_VERSION
     required_types = {
         "project": str,
         "phase": str,
         "frozen_by_pi": dict,
         "frozen_history": list,
+        "layer_checkpoints": dict,
+        "checkpoint_history": list,
         "macro_questions": list,
         "notifications": list,
     }
@@ -77,6 +105,10 @@ def load_state(path: Path) -> dict[str, Any]:
             raise SystemExit(
                 f"Invalid state field {key!r}: expected {expected_type.__name__}"
             )
+    for layer in CHECKPOINT_LAYERS:
+        checkpoint = state["layer_checkpoints"].get(layer)
+        if not isinstance(checkpoint, dict):
+            raise SystemExit(f"Invalid or missing layer checkpoint: {layer}")
     return state
 
 
@@ -135,6 +167,7 @@ def state_summary(state: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": question["id"],
                 "priority": question.get("priority", "medium"),
+                "layer": question.get("layer", "other"),
                 "text": question["text"],
                 "reason": question.get("reason", ""),
                 "recommendation": question.get("recommendation", ""),
@@ -151,6 +184,12 @@ def state_summary(state: dict[str, Any]) -> dict[str, Any]:
         "paused_for_pi": state["paused_for_pi"],
         "pending_macro_count": len(pending),
         "pending_macro_questions": pending,
+        "layer_checkpoints": state["layer_checkpoints"],
+        "missing_required_checkpoints": [
+            layer
+            for layer in ("direction", "science")
+            if state["layer_checkpoints"][layer].get("status") != "CONFIRMED_BY_PI"
+        ],
         "frozen_by_pi": state["frozen_by_pi"],
         "frozen_history_count": len(state["frozen_history"]),
         "notification_count": len(state["notifications"]),
@@ -189,6 +228,7 @@ def cmd_question(args: argparse.Namespace) -> None:
     question = {
         "id": next_id(state["macro_questions"], "Q"),
         "status": "PENDING_PI",
+        "layer": args.layer,
         "text": args.text,
         "priority": args.priority,
         "reason": args.reason,
@@ -238,6 +278,20 @@ def cmd_notify(args: argparse.Namespace) -> None:
 def cmd_phase(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
+    if args.set in {"confirmed_project", "paper_ready_pending_pi"}:
+        direction = state["layer_checkpoints"]["direction"]
+        if direction.get("status") != "CONFIRMED_BY_PI":
+            raise SystemExit(
+                "Cannot enter confirmed_project or paper_ready_pending_pi: "
+                "the L1 direction checkpoint is not confirmed by the PI"
+            )
+    if args.set == "paper_ready_pending_pi":
+        science = state["layer_checkpoints"]["science"]
+        if science.get("status") != "CONFIRMED_BY_PI":
+            raise SystemExit(
+                "Cannot enter paper_ready_pending_pi: "
+                "the L2 scientific-story checkpoint is not confirmed by the PI"
+            )
     state["phase"] = args.set
     refresh_pause(state)
     save_state(path, state)
@@ -264,6 +318,83 @@ def decision_source(state: dict[str, Any], args: argparse.Namespace) -> dict[str
         "type": "direct_pi_instruction",
         "decision": direct_decision,
     }
+
+
+def cmd_confirm(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    if (
+        args.layer == "science"
+        and state["layer_checkpoints"]["direction"].get("status")
+        != "CONFIRMED_BY_PI"
+    ):
+        raise SystemExit(
+            "Cannot confirm the L2 scientific story before the L1 direction"
+        )
+    source = decision_source(state, args)
+    if source["type"] == "answered_question":
+        question = next(
+            q
+            for q in state["macro_questions"]
+            if q.get("id") == source["question_id"]
+        )
+        question_layer = question.get("layer", "other")
+        if question_layer not in {"other", args.layer}:
+            raise SystemExit(
+                f"Question {source['question_id']} belongs to layer "
+                f"{question_layer!r}, not {args.layer!r}"
+            )
+    previous = state["layer_checkpoints"][args.layer]
+    if (
+        previous.get("status") == "CONFIRMED_BY_PI"
+        and previous.get("id") == args.id
+        and previous.get("summary") == args.summary
+    ):
+        raise SystemExit(f"Layer is already confirmed to this value: {args.layer}")
+    if previous.get("status") != "UNSET":
+        state["checkpoint_history"].append(
+            {
+                "layer": args.layer,
+                "previous": previous,
+                "replacement_id": args.id,
+                "decision_source": source,
+                "created_at": now_iso(),
+            }
+        )
+    state["layer_checkpoints"][args.layer] = {
+        "status": "CONFIRMED_BY_PI",
+        "id": args.id,
+        "summary": args.summary,
+        "confirmed_at": now_iso(),
+        "decision_source": source,
+    }
+    if args.layer == "direction":
+        science = state["layer_checkpoints"]["science"]
+        if science.get("status") == "CONFIRMED_BY_PI":
+            state["checkpoint_history"].append(
+                {
+                    "layer": "science",
+                    "previous": science,
+                    "replacement_id": None,
+                    "decision_source": {
+                        "type": "invalidated_by_direction_change",
+                        "direction_id": args.id,
+                    },
+                    "created_at": now_iso(),
+                }
+            )
+            stale_science = dict(science)
+            stale_science["status"] = "STALE_AFTER_DIRECTION_CHANGE"
+            stale_science["decision_source"] = {
+                "type": "invalidated_by_direction_change",
+                "direction_id": args.id,
+            }
+            state["layer_checkpoints"]["science"] = stale_science
+            if state.get("phase") == "paper_ready_pending_pi":
+                state["phase"] = "confirmed_project"
+    refresh_pause(state)
+    save_state(path, state)
+    print(json.dumps(state_summary(state), ensure_ascii=False, indent=2))
 
 
 def cmd_freeze(args: argparse.Namespace) -> None:
@@ -334,6 +465,9 @@ def build_parser() -> argparse.ArgumentParser:
     question_parser.add_argument("state")
     question_parser.add_argument("--text", required=True)
     question_parser.add_argument(
+        "--layer", choices=sorted(QUESTION_LAYERS), default="other"
+    )
+    question_parser.add_argument(
         "--priority", choices=sorted(PRIORITY_ORDER), default="medium"
     )
     question_parser.add_argument("--reason", default="")
@@ -356,6 +490,18 @@ def build_parser() -> argparse.ArgumentParser:
     phase_parser.add_argument("state")
     phase_parser.add_argument("--set", required=True, choices=sorted(VALID_PHASES))
     phase_parser.set_defaults(func=cmd_phase)
+
+    confirm_parser = subparsers.add_parser(
+        "confirm", help="Record a user-confirmed L1 or L2 checkpoint"
+    )
+    confirm_parser.add_argument("state")
+    confirm_parser.add_argument("--layer", required=True, choices=sorted(CHECKPOINT_LAYERS))
+    confirm_parser.add_argument("--id", required=True)
+    confirm_parser.add_argument("--summary", required=True)
+    confirm_source = confirm_parser.add_mutually_exclusive_group(required=True)
+    confirm_source.add_argument("--decision-id")
+    confirm_source.add_argument("--pi-decision")
+    confirm_parser.set_defaults(func=cmd_confirm)
 
     freeze_parser = subparsers.add_parser("freeze", help="Freeze a user-confirmed field")
     freeze_parser.add_argument("state")

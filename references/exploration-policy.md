@@ -50,6 +50,8 @@ A dataset is promising for that task when:
 
 Reject or narrow a task when the dataset supplies only a proxy label that cannot support the claim.
 
+Keep a small ranked L1 shortlist rather than silently choosing one pair. Once meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and cost are known well enough to compare the candidates, ask the user to select the active task-dataset direction. Cheap inspection and feasibility work may precede this choice; sustained method search and broad tuning may not.
+
 ## Prefer useful headroom over saturated benchmarks
 
 Prefer datasets where strong comparable methods still leave meaningful room for improvement. Scores above roughly 90 on percentage-like primary metrics are a warning sign when most recent methods cluster there, but `90` is not a universal cutoff: metric scale, uncertainty, subgroup failures, calibration, and task difficulty matter.
@@ -80,6 +82,22 @@ For every serious nearest-work claim, record the exact paper title, year or venu
 Novelty is not “this exact module combination was not found.” Require a meaningful gap: an unsolved problem, a different estimand, a new mechanism, a new guarantee, or a new empirical finding that changes what is known.
 
 Actively search for alternative names for the same idea. If the nearest work already implements the same mechanism under different terminology, reject the novelty claim or redefine the problem honestly.
+
+## Establish external comparisons before multiplying methods
+
+Nearest work and experimental baselines overlap but are not identical. A paper may be crucial for novelty even when it cannot be run, while a simple baseline may be essential experimentally without being the nearest conceptual work. Record both roles.
+
+Before calling a method promising or giving it a broad tuning budget, create a baseline roster from primary sources. It should normally include:
+
+- the dataset paper's official reference result or method when available;
+- the strongest recent protocol-comparable published method found for the task and dataset;
+- at least one published method with a different mechanism;
+- a strong simple baseline;
+- internal variants and ablations in a separate category.
+
+Verify task, prediction unit, dataset version, split, supervision, information available at inference, metric definition, and evaluation date. A larger published number under a different protocol is historical context, not an apples-to-apples winner. Label it `REPORTED_NOT_MATCHED`; reproduce or adapt decision-critical baselines under the current protocol when feasible.
+
+If the current result table contains only our own methods, the scientific comparison is incomplete regardless of how many internal variants were tried. Prioritize external comparison work before generating more variants. When a key implementation is unavailable or too costly, record the exact blocker and the weakest defensible claim that remains.
 
 ## Derive the method from the problem
 
@@ -120,7 +138,11 @@ Treat a candidate as promising when most of the following hold:
 - there is a plausible path from the current result to a competitive result;
 - the expected scientific value justifies the remaining compute and time.
 
+In addition, the baseline roster must exist and expose a plausible route to competitiveness. A candidate can remain in `METHOD_CHEAP_SCREEN` while external baselines are being verified, but it cannot be called paper-worthy from internal comparisons alone.
+
 For a promising candidate, choose a project-appropriate ceiling-search budget based on the venue timeline, available compute, and the number of viable alternatives. Tune hyperparameters and other permitted implementation choices using available compute, including an existing GPU by default. Continue until results saturate, gains show clear diminishing returns, the budget is reached, or the candidate loses its promise. Record why the ceiling search stopped. The resulting "ceiling" is the best observed development-side result under the current project contract, not a universal upper bound or proof of generalization.
+
+After the ceiling report and external comparison exist, ask the user whether this problem + core mechanism + innovation claim should become the active L2 scientific story. The tuning itself does not silently make that decision.
 
 Report a ceiling search to the user in plain language with:
 
@@ -147,19 +169,24 @@ For each serious task-dataset-method candidate, keep a compact card:
 数据集为什么还有提升空间：
 最接近的工作及未解决点：
 近邻工作来源、检索日期与已验证事实：
+外部 baseline roster（数据集来源、近期最强可比、不同机制、强简单对照）：
+外部 baseline 的协议可比性和复现状态：
 观察到的具体问题：
 解决问题的直觉：
 对应的最小数学方法：
-最强简单对照：
+候选创新点及与近邻工作的差异：
 第一个可证伪实验：
 潜力筛选状态与证据：
 低潜力关闭原因（如适用）：
 调参起点、当前最好结果与停止原因（如适用）：
+我们的结果与外部 baseline 差距：
+L1 方向决策来源：
+L2 科学主线决策来源（如已确认）：
 本项目的论文就绪条件：
 预计时间和算力：
 ```
 
-Keep a small ranked set of candidates rather than a long idea dump. A candidate may enter cheap exploratory testing when the pair is plausible; it becomes a confirmed project only when the user fixes the task or dataset.
+Keep a small ranked set of candidates rather than a long idea dump. A candidate may enter cheap data or baseline feasibility testing when the pair is plausible; sustained method work starts only after the user confirms L1. A promising method may be tuned autonomously, but becomes the active L2 story only after the user confirms the problem, mechanism, and innovation claim.
 
 ## Downstream decision rule
 

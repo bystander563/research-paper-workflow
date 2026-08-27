@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Paper Workflow"
-  short_description: "Manage autonomous research with PI checkpoints"
-  default_prompt: "Use $research-paper-workflow to scout or continue this paper project, keep a durable research ledger, explain major changes plainly, and queue only decisions that need me."
+  short_description: "Layer research, baselines, and PI decisions"
+  default_prompt: "Use $research-paper-workflow to scout or continue this paper project. Keep L1 direction, L2 scientific evidence and external baselines, and L3 implementation separate; ask me to confirm the L1 direction and L2 paper line while handling routine experiments autonomously."
