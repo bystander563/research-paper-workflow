@@ -86,9 +86,15 @@ dynamic detail to its canonical source.
 If the active Codex configuration defines `project_doc_fallback_filenames`, pass
 each configured basename to `agents-audit --fallback-name NAME` in the same
 precedence order. Otherwise the helper intentionally checks only the standard
-`AGENTS.override.md` and `AGENTS.md` names.
+`AGENTS.override.md` and `AGENTS.md` names. The audit mirrors Codex by skipping
+zero-byte instruction files and selecting at most one non-empty file per
+directory; empty files remain visible in the snapshot as ignored.
 
 ## Maintenance loop
+
+Resolve `<controller>` as `scripts/research_queue.py` relative to the directory
+containing the active `SKILL.md`; do not assume the research project itself has
+a `scripts/research_queue.py` file.
 
 Before changing project instructions:
 
@@ -115,6 +121,15 @@ audit of `docs/` therefore cannot erase the baseline for `src/`. Once a scope
 has a snapshot, `agents-audit` is compare-only: if content changed, it exits
 nonzero and leaves all snapshots untouched. Only `agents-record` accepts an
 intentional change after its class and authority have been checked.
+
+Remove a saved scope with `agents-scope-remove` when its directory is retired.
+If the directory no longer exists, the controller may prune it autonomously and
+notify the user. If it still exists, removing its audit coverage requires a
+scoped PI approval. Copy the unambiguous `removal_target` shown for that scope
+by `status`; it has the form
+`instructions-scope:{"cwd":"<cwd>","fallback":[...]}`. Scope-removal receipts
+are bounded to the same recent-history limit as instruction updates. Pass the
+same `--fallback-name` sequence used when that scope was recorded.
 
 ## Change classes and authority
 
@@ -178,20 +193,22 @@ precedence.
 ## Controller commands
 
 ```powershell
-python scripts/research_queue.py agents-audit STATE --cwd PROJECT_SUBDIRECTORY
-python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind mechanical --reason "..." --summary "..."
-python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..." --canonical-source .codex/research/L2/D001.md
-python scripts/research_queue.py question STATE --layer instructions --target instructions:AGENTS.md --text "..."
-python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome approve
-python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind semantic --reason "..." --summary "..." --decision-id Q001
+python <controller> agents-audit STATE --cwd PROJECT_SUBDIRECTORY
+python <controller> agents-record STATE --path AGENTS.md --kind mechanical --reason "..." --summary "..."
+python <controller> agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..." --canonical-source .codex/research/L2/D001.md
+python <controller> question STATE --layer instructions --target instructions:AGENTS.md --text "..."
+python <controller> answer STATE --id Q001 --decision "..." --outcome approve
+python <controller> agents-record STATE --path AGENTS.md --kind semantic --reason "..." --summary "..." --decision-id Q001
+python <controller> agents-scope-remove STATE --cwd RETIRED_DIRECTORY --reason "..." --summary "..."
 ```
 
 For a newly created instruction file, audit its intended directory before
 creation and pass `--before-absent` when recording it. The controller refuses to
 record multiple changed instruction files as one receipt. To remove an audited
 instruction file, delete it and record the same path with `--after-absent`;
-creation and deletion cannot be combined in one receipt. A move is therefore
-recorded as one creation and one deletion. The controller refreshes every saved
+creation and deletion cannot be combined in one receipt. For a move, first
+create and record the new file, then delete and record the old file. The
+controller refreshes every saved
 scope affected by that file and leaves unrelated scopes unchanged. It also reports an
 unrecorded change through the normal control audit after an instruction snapshot
 exists.

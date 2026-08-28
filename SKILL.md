@@ -9,9 +9,10 @@ Run routine research work autonomously inside a user-confirmed direction. The
 user chooses the scientific direction at explicit checkpoints; elapsed time,
 existing code, or a good result never substitutes for that decision.
 
-Project instructions, `AGENTS.md`, frozen contracts, and the user's latest
-message override this skill. Do not turn one project's protocol into a universal
-rule.
+The user's latest explicit instruction, confirmed project contracts, and scoped
+project instructions (including `AGENTS.md`) govern this skill. Resolve any
+conflict before dependent work. Do not turn one project's protocol into a
+universal rule.
 
 ## Shortest flow
 
@@ -23,6 +24,8 @@ user confirms venue/time + domain (+ optional idea)
 -> tune only promising methods to estimate their current-project ceiling
 -> USER L2: promote problem + core mechanism + innovation claim
 -> complete the L1 evidence standard
+-> beat the strongest recent top-conference protocol-matched baseline by >=1 point
+-> generate the paper-decision report
 -> USER PAPER: enter writing + select headline claim
 -> hand off the fixed package to the submission workflow
 ```
@@ -66,10 +69,19 @@ supersedes every older unconsumed approval.
 - A corrected bug or protocol invalidation must propagate to L2 immediately.
 - Compass, L1, L2, and paper fields have one typed source of truth. Use
   `frozen_by_pi` only for additional choices.
-- No generic sealed-set, external-label, metric, second-dataset, or unexposed-
-  dataset protocol is created by this skill. Put adopted requirements in L1.
+- During L1 scouting, actively search for and report at least one credible
+  dataset not previously exposed in the project, or report why none is
+  currently feasible. This search is mandatory; adopting it as a second
+  dataset or generalization requirement remains the user's L1 decision.
+- No generic sealed-set, external-label, metric, or evaluation protocol is
+  created by this skill. Put adopted requirements in L1.
 - External baselines are published methods or conventional comparators, not
   another dataset. Keep them separate from internal variants.
+- “Ready for a paper decision” has a hard numeric floor: on the higher-is-better
+  primary metric, the method must beat the strongest recent top-conference
+  protocol-matched baseline by at least 1 percentage point. Interpret this as
+  `0.01` on a `0–1` scale or `1.0` on a `0–100` scale. L1 may set a stricter
+  floor, never a lower one.
 - Project checkpoint and assessment records must be project-local. External
   literature or evidence artifacts may be referenced read-only.
 - `AGENTS.md` is a bounded stable contract and router, not research state.
@@ -81,13 +93,18 @@ start, continue, run, iterate, or monitor.
 
 Before open-ended exploration, obtain a user-confirmed venue/submission window
 and domain. An optional idea is a seed unless the user explicitly freezes an
-additional constraint around it.
+additional constraint around it. When changing only venue/domain, preserve the
+current optional idea unless the user explicitly clears it.
 
-For an existing state, run `scripts/research_queue.py audit STATE`. Audit the
-relevant project-instruction scope when instructions exist or the working
-directory changed. Instruction audit is compare-only for an existing scope; an
-unrecorded change must be classified and recorded, not accepted by rerunning
-the audit.
+Resolve `<controller>` as `scripts/research_queue.py` relative to the directory
+containing this `SKILL.md`, not the active research project's working
+directory. Keep the state itself at
+`<project>/.codex/research-paper-workflow.json`.
+
+For an existing state, run `python <controller> audit STATE`. Audit the relevant
+project-instruction scope when instructions exist or the working directory
+changed. Instruction audit is compare-only for an existing scope; an unrecorded
+change must be classified and recorded, not accepted by rerunning the audit.
 
 If a project has no workflow state, classify it first. Route a substantially
 fixed task, method, experiment package, and manuscript direction directly to a
@@ -100,10 +117,12 @@ missing checkpoint; do not infer it from historical experiments.
 
 Scout a small ranked shortlist. Show task meaning, task-data fit, headroom,
 nearest-work collision risk, external-baseline feasibility, cost, venue/time
-fit, and a recommendation. Ask the user to select the task-dataset pair and set
-the competitive bar, novelty sufficiency, generalization/second-dataset
-expectation, and paper-ready threshold. “Not required” and “decide later” are
-user choices.
+fit, the result of the unexposed-dataset search, and a recommendation. Ask the
+user to select the task-dataset pair and set the competitive bar, novelty
+sufficiency, generalization/second-dataset expectation, and paper-ready
+threshold. Store a numeric paper-gain floor of at least 1 percentage point with
+that standard. “Not required” and “decide later” are user choices for adoption,
+not permission to skip the search or lower this competitive floor.
 
 Cheap verification may continue while waiting. Sustained method search and
 broad tuning require confirmed L1. Changing L1 requires a new scoped decision.
@@ -122,11 +141,21 @@ requires a new scoped decision.
 
 ### Paper decision
 
-When L2 appears to meet L1, create a project-local assessment of every L1
-criterion. Report the narrowest supported claim, strongest matched comparison,
-remaining reviewer objection, and necessary versus optional work. Ask whether
-to enter writing and which headline claim to use. Only a typed paper checkpoint
-may enter `paper_handoff_approved`.
+When L2 appears to meet L1, verify from primary sources that the comparison is
+the strongest recent top-conference baseline found under the same task,
+dataset/split, labels, inference information, metric, and evaluation procedure.
+Do not ask for a paper decision unless the primary result clears the configured
+gain floor.
+
+First create a project-local paper-decision report containing the current task,
+dataset, the problem in current/nearest work, innovation, concrete method, final results,
+baseline identity/venue/year/source and literature-search scope, protocol-match
+evidence, metric scale, baseline and our score, computed point gain, required floor, every other L1 criterion, the
+narrowest supported claim, strongest remaining objection, and necessary versus
+optional work. Then ask whether to enter writing and which headline claim to
+use. Only a typed paper checkpoint may enter `paper_handoff_approved`. If the
+assessment changes after this gate, reassess it before seeking or consuming the
+paper decision.
 
 ## Execution and collaboration
 
@@ -151,6 +180,13 @@ active PI decisions, set `PAUSED_FOR_PI` and stop at the next safe checkpoint.
 Register long-running work that must survive context compaction. The skill does
 not wake, poll, or schedule itself.
 
+When the user asks what the agent is doing, challenges the rationale, or wants
+to discuss an in-progress method, run a read-only drift check. Trace the current
+action through compass -> L1 -> L2 -> tested prediction and state what evidence
+would falsify it. The discussion is not approval. If the trace fails, stop only
+that branch, report the suspected drift plainly, and obtain a scoped L1/L2
+decision before changing the scientific direction.
+
 ## Routing
 
 | Need | Read or run |
@@ -160,7 +196,7 @@ not wake, poll, or schedule itself.
 | Questions, notifications, timeout, pause | [references/collaboration-policy.md](references/collaboration-policy.md) |
 | L1/L2/L3 record content | [references/research-state.md](references/research-state.md) |
 | Project `AGENTS.md` maintenance | [references/agents-maintenance.md](references/agents-maintenance.md) |
-| State, checkpoints, jobs, and audits | `scripts/research_queue.py` |
+| State, checkpoints, jobs, and audits | `<skill-dir>/scripts/research_queue.py` |
 
 Read only the references relevant to the current operation. The controller
 checks authority, provenance, path scope, and artifact availability; it does not

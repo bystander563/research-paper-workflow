@@ -14,15 +14,18 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 7
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7}
+SCHEMA_VERSION = 9
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+MIN_PAPER_READY_GAIN_POINTS = 1.0
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
 RECENT_INSTRUCTION_UPDATE_LIMIT = 20
@@ -30,6 +33,7 @@ ROOT_AGENTS_TARGET_BYTES = 8 * 1024
 ROOT_AGENTS_REVIEW_BYTES = 12 * 1024
 EFFECTIVE_AGENTS_TARGET_BYTES = 16 * 1024
 CODEX_PROJECT_DOC_DEFAULT_BYTES = 32 * 1024
+CHECKPOINT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 AGENTS_FILENAMES = ("AGENTS.override.md", "AGENTS.md")
 INSTRUCTION_CHANGE_KINDS = {"mechanical", "compaction", "semantic"}
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -44,6 +48,32 @@ QUESTION_LAYERS = {
     "other",
 }
 CHECKPOINT_LAYERS = ("compass", "direction", "science", "paper")
+CHECKPOINT_LAYER_FIELDS = {
+    "compass": {"venue_or_window", "domain", "starting_concept", "clear_starting_concept"},
+    "direction": {
+        "task_type",
+        "dataset",
+        "unexposed_dataset_search",
+        "competitive_bar",
+        "novelty_sufficiency",
+        "generalization_requirement",
+        "paper_ready_threshold",
+        "minimum_paper_gain_points",
+    },
+    "science": {
+        "direction_id",
+        "problem",
+        "core_mechanism",
+        "innovation_claim",
+        "external_baseline_status",
+        "ceiling_summary",
+        "nearest_work_record",
+        "baseline_record",
+        "result_record",
+    },
+    "paper": {"science_id", "headline_claim", "handoff_target"},
+}
+ALL_CHECKPOINT_FIELDS = set().union(*CHECKPOINT_LAYER_FIELDS.values())
 APPROVING_OUTCOMES = {"approve", "select"}
 DECISION_OUTCOMES = APPROVING_OUTCOMES | {"reject", "defer", "informational"}
 VALID_PHASES = {
@@ -55,7 +85,7 @@ VALID_PHASES = {
 }
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 JOB_STATUSES = ACTIVE_JOB_STATUSES | {"completed", "failed", "cancelled", "blocked"}
-PAPER_ASSESSMENT_FIELDS = (
+PAPER_ASSESSMENT_TEXT_FIELDS = (
     "competitive_bar_assessment",
     "novelty_assessment",
     "generalization_assessment",
@@ -65,6 +95,35 @@ PAPER_ASSESSMENT_FIELDS = (
     "remaining_objection",
     "necessary_work",
     "optional_work",
+    "specific_method",
+    "final_results",
+    "recent_top_conference_baseline",
+    "baseline_venue_year",
+    "baseline_search_scope",
+    "baseline_source",
+    "protocol_match_evidence",
+    "primary_metric",
+)
+PAPER_ASSESSMENT_NUMERIC_FIELDS = ("baseline_score", "our_score")
+PAPER_ASSESSMENT_CLI_FIELDS = (
+    *PAPER_ASSESSMENT_TEXT_FIELDS,
+    "metric_scale",
+    *PAPER_ASSESSMENT_NUMERIC_FIELDS,
+)
+PAPER_ASSESSMENT_CONTEXT_FIELDS = (
+    "current_task",
+    "dataset",
+    "current_work_problem",
+    "innovation",
+    "core_mechanism",
+    "minimum_paper_gain_points",
+    "improvement_points",
+)
+PAPER_ASSESSMENT_PAYLOAD_FIELDS = (
+    "direction_id",
+    "science_id",
+    *PAPER_ASSESSMENT_CONTEXT_FIELDS,
+    *PAPER_ASSESSMENT_CLI_FIELDS,
 )
 RESERVED_FROZEN_KEYS = {
     "venue",
@@ -77,11 +136,13 @@ RESERVED_FROZEN_KEYS = {
     "task_type",
     "dataset",
     "dataset_bundle",
+    "unexposed_dataset_search",
     "competitive_bar",
     "novelty_sufficiency",
     "generalization_requirement",
     "second_dataset_requirement",
     "paper_ready_threshold",
+    "minimum_paper_gain_points",
     "problem",
     "core_mechanism",
     "innovation_claim",
@@ -94,11 +155,14 @@ RESERVED_FROZEN_KEYS = {
     "任务",
     "任务类型",
     "数据集",
+    "非暴露数据集搜索",
     "竞争目标",
     "创新标准",
     "泛化要求",
     "第二数据集要求",
     "论文就绪条件",
+    "论文最小增益",
+    "论文增益门槛",
     "问题",
     "核心机制",
     "创新点",
@@ -108,6 +172,117 @@ RESERVED_FROZEN_KEYS = {
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def validate_checkpoint_id(raw: str) -> str:
+    value = str(raw or "")
+    if not CHECKPOINT_ID_PATTERN.fullmatch(value):
+        raise SystemExit(
+            "Checkpoint ID must be 1-64 ASCII letters, digits, dots, underscores, "
+            "or hyphens, must start with a letter or digit, and cannot contain a path"
+        )
+    return value
+
+
+def finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def calculate_improvement_points(
+    metric_scale: str, baseline_score: float, our_score: float
+) -> float:
+    if not finite_number(baseline_score) or not finite_number(our_score):
+        raise SystemExit("--baseline-score and --our-score must be finite numbers")
+    if metric_scale == "unit_interval":
+        if not (0.0 <= baseline_score <= 1.0 and 0.0 <= our_score <= 1.0):
+            raise SystemExit(
+                "unit_interval scores must both be between 0 and 1 inclusive"
+            )
+        gain = (our_score - baseline_score) * 100.0
+    elif metric_scale == "percentage":
+        if not (0.0 <= baseline_score <= 100.0 and 0.0 <= our_score <= 100.0):
+            raise SystemExit(
+                "percentage scores must both be between 0 and 100 inclusive"
+            )
+        gain = our_score - baseline_score
+    else:
+        raise SystemExit("--metric-scale must be unit_interval or percentage")
+    return round(gain, 10)
+
+
+def paper_assessment_complete(assessment: Any) -> bool:
+    if not isinstance(assessment, dict):
+        return False
+    if any(
+        not isinstance(assessment.get(field), str)
+        or not assessment[field].strip()
+        for field in PAPER_ASSESSMENT_TEXT_FIELDS
+    ):
+        return False
+    if assessment.get("metric_scale") not in {"unit_interval", "percentage"}:
+        return False
+    if any(
+        not finite_number(assessment.get(field))
+        for field in (
+            *PAPER_ASSESSMENT_NUMERIC_FIELDS,
+            "minimum_paper_gain_points",
+            "improvement_points",
+        )
+    ):
+        return False
+    if any(
+        not isinstance(assessment.get(field), str)
+        or not assessment[field].strip()
+        for field in (
+            "current_task",
+            "dataset",
+            "current_work_problem",
+            "innovation",
+            "core_mechanism",
+        )
+    ):
+        return False
+    try:
+        calculated = calculate_improvement_points(
+            assessment["metric_scale"],
+            assessment["baseline_score"],
+            assessment["our_score"],
+        )
+    except SystemExit:
+        return False
+    return (
+        assessment["minimum_paper_gain_points"] >= MIN_PAPER_READY_GAIN_POINTS
+        and math.isclose(
+            assessment["improvement_points"], calculated, abs_tol=1e-9
+        )
+        and calculated + 1e-9 >= assessment["minimum_paper_gain_points"]
+    )
+
+
+def paper_assessment_payload_sha256(assessment: dict[str, Any]) -> str:
+    payload = {
+        field: assessment.get(field) for field in PAPER_ASSESSMENT_PAYLOAD_FIELDS
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def reject_irrelevant_checkpoint_fields(args: argparse.Namespace) -> None:
+    allowed = CHECKPOINT_LAYER_FIELDS[args.layer]
+    unexpected = []
+    for name in sorted(ALL_CHECKPOINT_FIELDS - allowed):
+        value = getattr(args, name, None)
+        if value is not None and value is not False:
+            unexpected.append("--" + name.replace("_", "-"))
+    if unexpected:
+        raise SystemExit(
+            f"Checkpoint layer {args.layer!r} does not use: " + ", ".join(unexpected)
+        )
 
 
 def empty_checkpoint() -> dict[str, Any]:
@@ -134,6 +309,8 @@ def empty_instruction_maintenance() -> dict[str, Any]:
         "audits_by_scope": {},
         "recent_updates": [],
         "compacted_update_count": 0,
+        "recent_scope_removals": [],
+        "compacted_scope_removal_count": 0,
     }
 
 
@@ -277,6 +454,28 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
                 update["canonical_sources"] = []
                 if update.get("kind") == "compaction":
                     update["legacy_source_unverified"] = True
+    if version in {1, 2, 3, 4, 5, 6, 7}:
+        maintenance = state.setdefault("instruction_maintenance", empty_instruction_maintenance())
+        maintenance.setdefault("recent_scope_removals", [])
+        maintenance.setdefault("compacted_scope_removal_count", 0)
+        direction = state.setdefault("layer_checkpoints", {}).setdefault(
+            "direction", empty_checkpoint()
+        )
+        if direction.get("status") == "CONFIRMED_BY_PI" and not (
+            (direction.get("payload") or {}).get("unexposed_dataset_search")
+        ):
+            direction["status"] = "LEGACY_CONFIRMED_NEEDS_AUDIT"
+    if version in {1, 2, 3, 4, 5, 6, 7, 8}:
+        direction = state.setdefault("layer_checkpoints", {}).setdefault(
+            "direction", empty_checkpoint()
+        )
+        standard = (direction.get("payload") or {}).get("evidence_standard") or {}
+        legacy_minimum = standard.get("minimum_paper_gain_points")
+        if direction.get("status") == "CONFIRMED_BY_PI" and (
+            not finite_number(legacy_minimum)
+            or legacy_minimum < MIN_PAPER_READY_GAIN_POINTS
+        ):
+            direction["status"] = "LEGACY_CONFIRMED_NEEDS_AUDIT"
     state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -317,6 +516,21 @@ def load_state(path: Path) -> dict[str, Any]:
         checkpoint = state["layer_checkpoints"].get(layer)
         if not isinstance(checkpoint, dict):
             raise SystemExit(f"Invalid or missing layer checkpoint: {layer}")
+    seen_question_ids: set[str] = set()
+    for question in state["macro_questions"]:
+        if not isinstance(question, dict):
+            raise SystemExit("Every PI question must be a structured object")
+        question_id = str(question.get("id") or "")
+        if not question_id or question_id in seen_question_ids:
+            raise SystemExit("PI question IDs must be non-empty and unique")
+        seen_question_ids.add(question_id)
+        if question.get("status") not in {"PENDING_PI", "DEFERRED_PI", "ANSWERED"}:
+            raise SystemExit(
+                f"PI question {question_id} has an invalid status: "
+                f"{question.get('status')!r}"
+            )
+    if any(not isinstance(job, dict) for job in state["jobs"]):
+        raise SystemExit("Every job record must be a structured object")
     refresh_pause(state)
     return state
 
@@ -379,26 +593,14 @@ def analyze_project_instructions(
     """
 
     project_root = project_root_for_state(state_path).resolve()
-    fallback_filenames = fallback_filenames or []
-    for name in fallback_filenames:
-        if Path(name).name != name or name in AGENTS_FILENAMES:
-            raise SystemExit(f"Invalid project instruction fallback filename: {name!r}")
+    cwd, descriptor = normalized_instruction_scope(
+        state_path, cwd_raw, fallback_filenames
+    )
+    fallback_filenames = descriptor["fallback_filenames"]
     instruction_filenames = AGENTS_FILENAMES + tuple(fallback_filenames)
-    if cwd_raw:
-        cwd = Path(cwd_raw).expanduser()
-        if not cwd.is_absolute():
-            cwd = project_root / cwd
-        cwd = cwd.resolve()
-    else:
-        cwd = project_root
     if not cwd.is_dir():
         raise SystemExit(f"Instruction audit working directory does not exist: {cwd}")
-    try:
-        relative_cwd = cwd.relative_to(project_root)
-    except ValueError as exc:
-        raise SystemExit(
-            f"Instruction audit working directory must stay inside {project_root}: {cwd}"
-        ) from exc
+    relative_cwd = cwd.relative_to(project_root)
 
     directories = [project_root]
     current = project_root
@@ -409,6 +611,7 @@ def analyze_project_instructions(
     observed: list[dict[str, Any]] = []
     effective: list[dict[str, Any]] = []
     shadowed: list[dict[str, str]] = []
+    ignored_empty: list[str] = []
     root_instruction: dict[str, Any] | None = None
     for directory in directories:
         existing = [
@@ -416,24 +619,34 @@ def analyze_project_instructions(
             for name in instruction_filenames
             if (directory / name).is_file()
         ]
-        selected = existing[0] if existing else None
+        nonempty = [candidate for candidate in existing if candidate.stat().st_size > 0]
+        selected = nonempty[0] if nonempty else None
         selected_stored = (
             selected.relative_to(project_root).as_posix() if selected is not None else None
         )
         for candidate in existing:
             stored = candidate.relative_to(project_root).as_posix()
+            candidate_bytes = candidate.stat().st_size
+            ignored_reason = "empty" if candidate_bytes == 0 else None
             entry = {
                 "path": stored,
-                "bytes": candidate.stat().st_size,
+                "bytes": candidate_bytes,
                 "sha256": sha256_file(candidate),
                 "selected": candidate == selected,
-                "shadowed_by": None if candidate == selected else selected_stored,
+                "shadowed_by": (
+                    selected_stored
+                    if candidate != selected and ignored_reason is None
+                    else None
+                ),
+                "ignored_reason": ignored_reason,
             }
             observed.append(entry)
             if candidate == selected:
                 effective.append(entry)
                 if directory == project_root:
                     root_instruction = entry
+            elif ignored_reason == "empty":
+                ignored_empty.append(stored)
             else:
                 shadowed.append({"path": stored, "shadowed_by": str(selected_stored)})
 
@@ -487,6 +700,7 @@ def analyze_project_instructions(
         "effective_files": effective,
         "observed_files": observed,
         "shadowed_files": shadowed,
+        "ignored_empty_files": ignored_empty,
         "issues": issues,
     }
 
@@ -512,6 +726,44 @@ def instruction_scope_key(audit: dict[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def normalized_instruction_scope(
+    state_path: Path,
+    cwd_raw: str | None,
+    fallback_filenames: list[str] | None,
+) -> tuple[Path, dict[str, Any]]:
+    project_root = project_root_for_state(state_path).resolve()
+    fallbacks = list(fallback_filenames or [])
+    if len({os.path.normcase(name) for name in fallbacks}) != len(fallbacks):
+        raise SystemExit("Project instruction fallback filenames must be unique")
+    standard_names = {os.path.normcase(name) for name in AGENTS_FILENAMES}
+    for name in fallbacks:
+        if (
+            not name
+            or Path(name).name != name
+            or os.path.normcase(name) in standard_names
+        ):
+            raise SystemExit(f"Invalid project instruction fallback filename: {name!r}")
+    cwd = Path(cwd_raw).expanduser() if cwd_raw else project_root
+    if not cwd.is_absolute():
+        cwd = project_root / cwd
+    cwd = cwd.resolve()
+    try:
+        relative_cwd = cwd.relative_to(project_root)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Instruction audit working directory must stay inside {project_root}: {cwd}"
+        ) from exc
+    descriptor = {
+        "scope_cwd": "." if str(relative_cwd) == "." else relative_cwd.as_posix(),
+        "fallback_filenames": fallbacks,
+    }
+    return cwd, descriptor
+
+
+def instruction_scope_target(audit: dict[str, Any]) -> str:
+    return "instructions-scope:" + instruction_scope_key(audit)
 
 
 def normalize_project_record(path: Path, raw: str) -> tuple[Path, str, str]:
@@ -580,8 +832,41 @@ def append_checkpoint_receipt(
 
 def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> None:
     receipt = (
-        "\n\n## Paper-ready control assessment\n\n"
+        "\n\n## Paper-decision report\n\n"
         f"- Recorded at: {now_iso()}\n"
+        f"- Current task: {payload['current_task']}\n"
+        f"- Dataset: {payload['dataset']}\n"
+        f"- Problem in current work: {payload['current_work_problem']}\n"
+        f"- Innovation: {payload['innovation']}\n"
+        f"- Core mechanism: {payload['core_mechanism']}\n"
+        f"- Concrete method: {payload['specific_method']}\n"
+        f"- Final results: {payload['final_results']}\n"
+        "- Strongest recent top-conference protocol-matched baseline: "
+        f"{payload['recent_top_conference_baseline']}\n"
+        f"- Baseline venue/year: {payload['baseline_venue_year']}\n"
+        f"- Baseline search scope: {payload['baseline_search_scope']}\n"
+        f"- Baseline source: {payload['baseline_source']}\n"
+        f"- Protocol-match evidence: {payload['protocol_match_evidence']}\n"
+        f"- Primary metric: {payload['primary_metric']}\n"
+        f"- Metric scale: `{payload['metric_scale']}`\n"
+        f"- Baseline score: {payload['baseline_score']:.10g}\n"
+        f"- Our score: {payload['our_score']:.10g}\n"
+        "- Improvement (percentage points): "
+        f"{payload['improvement_points']:.10g}\n"
+        "- Required improvement (percentage points): "
+        f"{payload['minimum_paper_gain_points']:.10g}\n"
+        f"- Competitive-bar assessment: {payload['competitive_bar_assessment']}\n"
+        f"- Novelty assessment: {payload['novelty_assessment']}\n"
+        f"- Generalization assessment: {payload['generalization_assessment']}\n"
+        "- Paper-ready-threshold assessment: "
+        f"{payload['paper_ready_threshold_assessment']}\n"
+        f"- Narrowest supported claim: {payload['narrowest_supported_claim']}\n"
+        f"- Strongest matched comparison: {payload['strongest_matched_comparison']}\n"
+        f"- Remaining objection: {payload['remaining_objection']}\n"
+        f"- Necessary work: {payload['necessary_work']}\n"
+        f"- Optional work: {payload['optional_work']}\n\n"
+        "The paper decision remains with the PI; this report only establishes that "
+        "the configured evidence floor is met.\n\n"
         "- Structured assessment:\n\n"
         "```json\n"
         + json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -637,14 +922,68 @@ def replace_science_current_block(text: str, body: str) -> str:
     if start_marker in text and end_marker in text:
         start = text.index(start_marker)
         end = text.index(end_marker, start) + len(end_marker)
+        legacy_update = text.find("Last material update:", end)
+        next_heading = text.find("\n## ", end)
+        if legacy_update >= 0 and (next_heading < 0 or legacy_update < next_heading):
+            legacy_update_end = text.find("\n", legacy_update)
+            end = len(text) if legacy_update_end < 0 else legacy_update_end + 1
         return text[:start] + replacement + text[end:]
 
     start = text.find("L2 status:")
     end_anchor = "Last material update:"
-    end = text.find(end_anchor, start) if start >= 0 else -1
-    if start >= 0 and end >= 0:
-        return text[:start] + replacement + "  \n" + text[end:]
+    update_start = text.find(end_anchor, start) if start >= 0 else -1
+    if start >= 0 and update_start >= 0:
+        update_end = text.find("\n", update_start)
+        end = len(text) if update_end < 0 else update_end + 1
+        return text[:start] + replacement + "\n" + text[end:]
     return text.rstrip() + "\n\n" + replacement + "\n"
+
+
+def l1_context_body(direction_id: str, payload: dict[str, Any]) -> str:
+    standard = payload["evidence_standard"]
+    return (
+        f"Direction ID: `{direction_id}`  \n"
+        f"L1 task and dataset: {payload['task_type']} | {payload['dataset']}  \n"
+        "Unexposed-dataset search: "
+        f"{payload['unexposed_dataset_search']}  \n"
+        "L1 evidence standard: "
+        f"competitive={standard['competitive_bar']} | "
+        f"novelty={standard['novelty_sufficiency']} | "
+        f"generalization={standard['generalization_requirement']} | "
+        f"paper-ready={standard['paper_ready_threshold']} | "
+        "minimum gain over the strongest recent top-conference protocol-matched "
+        f"baseline={standard['minimum_paper_gain_points']:.10g} percentage points  \n"
+        f"L1 confirmation source: direction checkpoint `{direction_id}` in workflow state"
+    )
+
+
+def replace_l1_context_block(
+    text: str, direction_id: str, payload: dict[str, Any]
+) -> str:
+    name = "L1_CONTEXT"
+    replacement = managed_block(name, l1_context_body(direction_id, payload))
+    start_marker = f"<!-- RPW:{name}:START -->"
+    end_marker = f"<!-- RPW:{name}:END -->"
+    if start_marker in text and end_marker in text:
+        start = text.index(start_marker)
+        end = text.index(end_marker, start) + len(end_marker)
+        return text[:start] + replacement + text[end:]
+
+    start = text.find("Direction ID:")
+    science_marker = text.find("<!-- RPW:SCIENCE_CURRENT:START -->")
+    legacy_science = text.find("L2 status:")
+    end_candidates = [
+        candidate
+        for candidate in (science_marker, legacy_science)
+        if candidate >= 0 and (start < 0 or candidate > start)
+    ]
+    if start >= 0 and end_candidates:
+        end = min(end_candidates)
+        return text[:start] + replacement + "\n" + text[end:]
+
+    first_newline = text.find("\n")
+    insert_at = len(text) if first_newline < 0 else first_newline + 1
+    return text[:insert_at] + "\n" + replacement + "\n" + text[insert_at:]
 
 
 def update_record_placeholders(
@@ -675,7 +1014,9 @@ def update_record_placeholders(
             f"- Novelty sufficiency: {standard['novelty_sufficiency']}\n"
             "- Generalization or second-dataset requirement: "
             f"{standard['generalization_requirement']}\n"
-            f"- Paper-ready threshold: {standard['paper_ready_threshold']}",
+            f"- Paper-ready threshold: {standard['paper_ready_threshold']}\n"
+            "- Minimum gain over the strongest recent top-conference protocol-matched "
+            f"baseline: {standard['minimum_paper_gain_points']:.10g} percentage points",
             "## Project evidence standard",
         )
         text = replace_managed_section(
@@ -685,6 +1026,8 @@ def update_record_placeholders(
             f"- Checkpoint: `{checkpoint_id}`\n"
             f"- Task type: {payload['task_type']}\n"
             f"- Dataset: {payload['dataset']}\n"
+            "- Unexposed-dataset search: "
+            f"{payload['unexposed_dataset_search']}\n"
             f"- User decision: {source['decision']}",
             "## Current PI decision",
         )
@@ -696,7 +1039,8 @@ def update_record_placeholders(
             f"Problem: {payload['problem']}  \n"
             f"Core mechanism: {payload['core_mechanism']}  \n"
             f"Innovation claim: {payload['innovation_claim']}  \n"
-            f"User decision: {source['decision']}",
+            f"User decision: {source['decision']}  \n"
+            f"Last material update: {now_iso()}",
         )
     atomic_write_text(record, text)
 
@@ -742,10 +1086,11 @@ def ensure_scaffold(state_path: Path, project: str) -> None:
             "- Novelty sufficiency: UNSET\n"
             "- Generalization or second-dataset requirement: UNSET\n"
             "- Paper-ready threshold: UNSET\n"
+            "- Minimum gain over the strongest recent top-conference protocol-matched baseline: 1 percentage point\n"
             "<!-- RPW:DIRECTION_STANDARD_CURRENT:END -->\n\n"
             "## Ranked directions\n\n"
-            "| ID | status | task type | dataset | why meaningful | task-data fit | headroom | nearest-work risk | baseline feasibility | cost/time | next action |\n"
-            "|---|---|---|---|---|---|---|---|---|---|---|\n\n"
+            "| ID | status | task type | dataset | why meaningful | task-data fit | headroom | nearest-work risk | baseline feasibility | unexposed-data option | cost/time | next action |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|\n\n"
             "<!-- RPW:DIRECTION_DECISION_CURRENT:START -->\n"
             "## Current PI decision\n\n"
             "UNSET\n"
@@ -759,20 +1104,25 @@ def ensure_l2_scaffold(state_path: Path, direction_id: str, payload: dict[str, A
     if not l2_path.exists():
         l2_path.write_text(
             f"# {direction_id} scientific story\n\n"
-            f"Direction ID: `{direction_id}`  \n"
-            f"L1 task and dataset: {payload['task_type']} | {payload['dataset']}  \n"
-            "L1 confirmation source: see workflow state  \n"
+            "<!-- RPW:L1_CONTEXT:START -->\n"
+            f"{l1_context_body(direction_id, payload)}\n"
+            "<!-- RPW:L1_CONTEXT:END -->\n"
             "<!-- RPW:SCIENCE_CURRENT:START -->\n"
             "L2 status: `MAPPING_NEAREST_WORK`  \n"
-            "Active problem + method decision source: UNSET\n"
-            "<!-- RPW:SCIENCE_CURRENT:END -->  \n"
-            f"Last material update: {now_iso()}\n\n"
+            "Active problem + method decision source: UNSET  \n"
+            f"Last material update: {now_iso()}\n"
+            "<!-- RPW:SCIENCE_CURRENT:END -->\n\n"
             "## Problem-to-method chain\n\nUNSET\n\n"
             "## Nearest work and external baselines\n\nUNSET\n\n"
             "## Decision-relevant results\n\nUNSET\n\n"
             "## Candidate and ceiling summary\n\nUNSET\n",
             encoding="utf-8",
         )
+    else:
+        text = l2_path.read_text(encoding="utf-8")
+        updated = replace_l1_context_block(text, direction_id, payload)
+        if updated != text:
+            atomic_write_text(l2_path, updated)
     return l2_path
 
 
@@ -821,15 +1171,30 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
     checkpoint = state["layer_checkpoints"].get(layer, {})
     if checkpoint.get("status") != "CONFIRMED_BY_PI":
         return False
+    if not (
+        checkpoint.get("id")
+        and checkpoint.get("confirmed_at")
+        and checkpoint.get("record_path")
+        and checkpoint.get("record_sha256_at_confirmation")
+    ):
+        return False
     source = checkpoint.get("decision_source") or {}
-    if source.get("outcome") not in APPROVING_OUTCOMES:
+    if (
+        source.get("outcome") not in APPROVING_OUTCOMES
+        or not source.get("decision")
+    ):
         return False
     payload = checkpoint.get("payload")
     if not isinstance(payload, dict):
         return False
     required: dict[str, tuple[str, ...]] = {
         "compass": ("venue_or_window", "domain"),
-        "direction": ("task_type", "dataset", "evidence_standard"),
+        "direction": (
+            "task_type",
+            "dataset",
+            "unexposed_dataset_search",
+            "evidence_standard",
+        ),
         "science": (
             "direction_id",
             "problem",
@@ -851,8 +1216,13 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
             "novelty_sufficiency",
             "generalization_requirement",
             "paper_ready_threshold",
+            "minimum_paper_gain_points",
         )
         if any(not standard.get(key) for key in keys):
+            return False
+        if not finite_number(standard.get("minimum_paper_gain_points")) or standard[
+            "minimum_paper_gain_points"
+        ] < MIN_PAPER_READY_GAIN_POINTS:
             return False
     if layer == "science":
         evidence_refs = payload.get("evidence_refs")
@@ -860,9 +1230,13 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
             return False
         for key in ("nearest_work", "external_baselines", "results"):
             ref = evidence_refs.get(key)
-            if not isinstance(ref, dict) or not ref.get("path"):
+            if (
+                not isinstance(ref, dict)
+                or not ref.get("path")
+                or not ref.get("sha256_at_confirmation")
+            ):
                 return False
-    return bool(checkpoint.get("record_path"))
+    return True
 
 
 def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bool:
@@ -873,14 +1247,73 @@ def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bo
     )
     if not record or not record.is_file():
         return False
+    if layer == "paper":
+        expected = state["layer_checkpoints"][layer].get(
+            "record_sha256_at_confirmation"
+        )
+        if not expected or sha256_file(record) != expected:
+            return False
     if layer == "science":
         refs = state["layer_checkpoints"][layer]["payload"]["evidence_refs"]
+        evidence_hashes: dict[Path, str] = {}
         for name in ("nearest_work", "external_baselines", "results"):
             ref = refs[name]
             evidence_path = resolve_stored_path(state_path, ref.get("path"))
             if not evidence_path or not evidence_path.is_file():
                 return False
+            resolved_evidence = evidence_path.resolve()
+            if resolved_evidence != record.resolve() and ref.get(
+                "sha256_at_confirmation"
+            ):
+                if resolved_evidence not in evidence_hashes:
+                    evidence_hashes[resolved_evidence] = sha256_file(evidence_path)
+                if evidence_hashes[resolved_evidence] != ref.get(
+                    "sha256_at_confirmation"
+                ):
+                    return False
     return True
+
+
+def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bool:
+    assessment = state.get("paper_ready_assessment")
+    if not paper_assessment_complete(assessment):
+        return False
+    if assessment.get("payload_sha256_at_gate") != paper_assessment_payload_sha256(
+        assessment
+    ):
+        return False
+    direction = state["layer_checkpoints"].get("direction", {})
+    science = state["layer_checkpoints"].get("science", {})
+    direction_payload = direction.get("payload") or {}
+    science_payload = science.get("payload") or {}
+    minimum_gain = (direction_payload.get("evidence_standard") or {}).get(
+        "minimum_paper_gain_points"
+    )
+    if (
+        assessment.get("direction_id") != direction.get("id")
+        or assessment.get("science_id") != science.get("id")
+        or assessment.get("current_task") != direction_payload.get("task_type")
+        or assessment.get("dataset") != direction_payload.get("dataset")
+        or assessment.get("current_work_problem") != science_payload.get("problem")
+        or assessment.get("innovation") != science_payload.get("innovation_claim")
+        or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
+        or not finite_number(minimum_gain)
+        or not math.isclose(
+            assessment.get("minimum_paper_gain_points"), minimum_gain, abs_tol=1e-9
+        )
+    ):
+        return False
+    record = resolve_stored_path(state_path, assessment.get("path"))
+    if (
+        not record
+        or not record.is_file()
+        or not stored_path_is_project_local(state_path, assessment.get("path"))
+    ):
+        return False
+    expected = assessment.get("sha256_after_handoff") or assessment.get(
+        "sha256_at_gate"
+    )
+    return bool(expected and sha256_file(record) == expected)
 
 
 def required_layers_for_phase(phase: str) -> tuple[str, ...]:
@@ -917,11 +1350,11 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0",
                 "Paper-ready phase requires a recorded assessment artifact",
             )
-        elif any(not assessment.get(field) for field in PAPER_ASSESSMENT_FIELDS):
+        elif not paper_assessment_complete(assessment):
             add(
                 "PAPER_READY_ASSESSMENT_INCOMPLETE",
                 "P0",
-                "Paper-ready assessment must explicitly cover the L1 criteria and claim risks",
+                "Paper-ready assessment must include the decision report and meet the numeric gain floor",
             )
         else:
             assessment_path = resolve_stored_path(state_path, assessment.get("path"))
@@ -939,11 +1372,20 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 )
     for layer in CHECKPOINT_LAYERS:
         checkpoint = state["layer_checkpoints"].get(layer, {})
+        checkpoint_id = checkpoint.get("id")
+        if checkpoint_id is not None and not CHECKPOINT_ID_PATTERN.fullmatch(
+            str(checkpoint_id)
+        ):
+            add(
+                "INVALID_CHECKPOINT_ID",
+                "P0",
+                f"Checkpoint {layer!r} has an unsafe or invalid ID: {checkpoint_id!r}",
+            )
         if checkpoint.get("status") == "LEGACY_CONFIRMED_NEEDS_AUDIT":
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v7",
+                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v9",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -968,7 +1410,21 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
                 "P0",
-                f"Confirmed {layer} checkpoint lacks required schema-v7 control fields",
+                f"Confirmed {layer} checkpoint lacks required schema-v9 control fields",
+            )
+        if (
+            layer == "paper"
+            and checkpoint.get("status") == "CONFIRMED_BY_PI"
+            and record is not None
+            and record.is_file()
+            and checkpoint.get("record_sha256_at_confirmation")
+            and sha256_file(record)
+            != checkpoint.get("record_sha256_at_confirmation")
+        ):
+            add(
+                "PAPER_CHECKPOINT_RECORD_CHANGED",
+                "P0",
+                "The approved paper-handoff record changed after confirmation",
             )
         source = checkpoint.get("decision_source") or {}
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and source.get(
@@ -1005,6 +1461,8 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             )
         raw_refs = (science.get("payload") or {}).get("evidence_refs")
         refs = raw_refs if isinstance(raw_refs, dict) else {}
+        science_record = resolve_stored_path(state_path, science.get("record_path"))
+        evidence_hashes: dict[Path, str] = {}
         for name, ref in refs.items():
             if not isinstance(ref, dict):
                 add(
@@ -1020,6 +1478,19 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                     "P0",
                     f"Science evidence record {name!r} is unavailable",
                 )
+            elif science_record is not None and ref.get("sha256_at_confirmation"):
+                resolved_evidence = evidence_path.resolve()
+                if resolved_evidence != science_record.resolve():
+                    if resolved_evidence not in evidence_hashes:
+                        evidence_hashes[resolved_evidence] = sha256_file(evidence_path)
+                    if evidence_hashes[resolved_evidence] != ref.get(
+                        "sha256_at_confirmation"
+                    ):
+                        add(
+                            "SCIENCE_EVIDENCE_RECORD_CHANGED",
+                            "P0",
+                            f"Science evidence record {name!r} changed after L2 confirmation; reassess and reconfirm the scientific story",
+                        )
     if paper.get("status") == "CONFIRMED_BY_PI" and (
         (paper.get("payload") or {}).get("science_id") != science.get("id")
     ):
@@ -1029,15 +1500,64 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             "Confirmed paper checkpoint does not reference the active L2 story",
         )
     assessment = state.get("paper_ready_assessment") or {}
+    direction_payload = direction.get("payload") or {}
+    science_payload = science.get("payload") or {}
+    direction_minimum = (direction_payload.get("evidence_standard") or {}).get(
+        "minimum_paper_gain_points"
+    )
+    assessment_minimum = assessment.get("minimum_paper_gain_points")
+    minimum_mismatch = not (
+        finite_number(direction_minimum)
+        and finite_number(assessment_minimum)
+        and math.isclose(direction_minimum, assessment_minimum, abs_tol=1e-9)
+    )
     if assessment and (
         assessment.get("direction_id") != direction.get("id")
         or assessment.get("science_id") != science.get("id")
+        or assessment.get("current_task") != direction_payload.get("task_type")
+        or assessment.get("dataset") != direction_payload.get("dataset")
+        or assessment.get("current_work_problem") != science_payload.get("problem")
+        or assessment.get("innovation") != science_payload.get("innovation_claim")
+        or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
+        or minimum_mismatch
     ):
         add(
             "PAPER_ASSESSMENT_LINK_MISMATCH",
             "P0",
-            "Paper-ready assessment is not tied to the active L1/L2 checkpoints",
+            "Paper-ready assessment content is not tied to the active L1/L2 checkpoints and gain floor",
         )
+    if assessment:
+        assessment_path = resolve_stored_path(state_path, assessment.get("path"))
+        expected_payload_sha = assessment.get("payload_sha256_at_gate")
+        if not expected_payload_sha:
+            add(
+                "PAPER_READY_ASSESSMENT_PAYLOAD_HASH_MISSING",
+                "P0",
+                "Paper-ready assessment lacks its structured-payload hash",
+            )
+        elif expected_payload_sha != paper_assessment_payload_sha256(assessment):
+            add(
+                "PAPER_READY_ASSESSMENT_PAYLOAD_CHANGED",
+                "P0",
+                "Paper-ready structured assessment changed after the gate",
+            )
+        expected_assessment_sha = assessment.get(
+            "sha256_after_handoff"
+        ) or assessment.get("sha256_at_gate")
+        if not expected_assessment_sha:
+            add(
+                "PAPER_READY_ASSESSMENT_HASH_MISSING",
+                "P0",
+                "Paper-ready assessment lacks a recorded content hash",
+            )
+        elif assessment_path is not None and assessment_path.is_file() and (
+            sha256_file(assessment_path) != expected_assessment_sha
+        ):
+            add(
+                "PAPER_READY_ASSESSMENT_CHANGED",
+                "P0",
+                "Paper-ready assessment changed after the gate; reassess it before seeking or using PI approval",
+            )
     for key in state.get("frozen_by_pi", {}):
         if normalized_frozen_key(key) in RESERVED_FROZEN_KEYS:
             add(
@@ -1108,6 +1628,40 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                         "INSTRUCTION_DECISION_RECEIPT_NOT_BOUND",
                         "P0",
                         f"Semantic instruction update for {update.get('path')!r} is not bound to one scoped PI decision",
+                    )
+    for removal in maintenance.get("recent_scope_removals", []):
+        if not removal.get("scope_key") or not removal.get("scope_cwd"):
+            add(
+                "INSTRUCTION_SCOPE_REMOVAL_RECEIPT_INCOMPLETE",
+                "P1",
+                "Instruction-scope removal receipt lacks its scope identity",
+            )
+        source = removal.get("decision_source") or {}
+        if removal.get("scope_existed_at_removal"):
+            if source.get("outcome") not in APPROVING_OUTCOMES:
+                add(
+                    "INSTRUCTION_SCOPE_REMOVAL_UNAPPROVED",
+                    "P0",
+                    f"Removal of existing instruction scope {removal.get('scope_cwd')!r} lacks PI approval",
+                )
+            if source.get("type") == "answered_question":
+                matches = [
+                    q
+                    for q in state["macro_questions"]
+                    if q.get("id") == source.get("question_id")
+                ]
+                expected = {
+                    "type": "instruction_scope_remove",
+                    "scope_key": removal.get("scope_key"),
+                }
+                if not matches or any(
+                    (matches[0].get("consumed_by") or {}).get(key) != value
+                    for key, value in expected.items()
+                ):
+                    add(
+                        "INSTRUCTION_SCOPE_DECISION_RECEIPT_NOT_BOUND",
+                        "P0",
+                        f"Removal of instruction scope {removal.get('scope_cwd')!r} is not bound to one scoped PI decision",
                     )
     for scope_key, last_instruction_audit in maintenance.get(
         "audits_by_scope", {}
@@ -1199,6 +1753,53 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
     return issues
 
 
+def instruction_maintenance_summary(state: dict[str, Any]) -> dict[str, Any]:
+    """Return operator-useful maintenance state without dumping every snapshot."""
+
+    maintenance = state.get("instruction_maintenance") or {}
+    scopes = []
+    for audit in maintenance.get("audits_by_scope", {}).values():
+        if not isinstance(audit, dict):
+            continue
+        scopes.append(
+            {
+                "scope_cwd": audit.get("scope_cwd"),
+                "fallback_filenames": audit.get("fallback_filenames") or [],
+                "status": audit.get("status"),
+                "effective_chain_bytes": audit.get("effective_chain_bytes"),
+                "effective_paths": [
+                    item.get("path") for item in audit.get("effective_files", [])
+                ],
+                "issue_codes": [
+                    issue.get("code") for issue in audit.get("issues", [])
+                ],
+                "removal_target": instruction_scope_target(audit),
+                "audited_at": audit.get("audited_at"),
+            }
+        )
+    scopes.sort(
+        key=lambda item: (
+            str(item.get("scope_cwd") or "."),
+            tuple(item.get("fallback_filenames") or []),
+        )
+    )
+    recent_updates = maintenance.get("recent_updates", [])
+    recent_removals = maintenance.get("recent_scope_removals", [])
+    return {
+        "policy": maintenance.get("policy"),
+        "audit_scope_count": len(maintenance.get("audits_by_scope", {})),
+        "audit_scopes": scopes,
+        "recent_update_count": len(recent_updates),
+        "recent_updates": recent_updates[-5:],
+        "compacted_update_count": maintenance.get("compacted_update_count", 0),
+        "recent_scope_removal_count": len(recent_removals),
+        "recent_scope_removals": recent_removals[-5:],
+        "compacted_scope_removal_count": maintenance.get(
+            "compacted_scope_removal_count", 0
+        ),
+    }
+
+
 def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
     pending = []
     ordered_questions = sorted(
@@ -1279,11 +1880,22 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "incomplete_checkpoints": [
             layer for layer in CHECKPOINT_LAYERS if not checkpoint_complete(state, layer)
         ],
+        "unusable_required_checkpoints": [
+            layer
+            for layer in required_layers_for_phase(state["phase"])
+            if not checkpoint_usable(state_path, state, layer)
+        ],
+        "paper_ready_assessment_usable": (
+            paper_ready_assessment_usable(state_path, state)
+            if state.get("paper_ready_assessment")
+            else None
+        ),
         "frozen_by_pi": state["frozen_by_pi"],
         "frozen_history_count": len(state["frozen_history"]),
         "notification_count": len(state["notifications"]),
+        "recent_notifications": state["notifications"][-5:],
         "notification_compacted_count": state.get("notification_compacted_count", 0),
-        "instruction_maintenance": state.get("instruction_maintenance"),
+        "instruction_maintenance": instruction_maintenance_summary(state),
         "active_jobs": active_jobs,
         "control_issues": issues,
         "updated_at": state["updated_at"],
@@ -1296,6 +1908,20 @@ def cmd_init(args: argparse.Namespace) -> None:
         raise SystemExit(f"Refusing to overwrite existing state: {path}")
     if args.phase not in {"discussion", "exploration"}:
         raise SystemExit("A new workflow may start only in discussion or exploration")
+    if args.phase == "discussion" and any(
+        value is not None
+        for value in (
+            args.venue_or_window,
+            args.domain,
+            args.starting_concept,
+            args.pi_decision,
+            args.pi_outcome,
+        )
+    ):
+        raise SystemExit(
+            "Compass and PI-decision arguments require --phase exploration; "
+            "otherwise omit them and confirm the compass later"
+        )
     if args.phase == "exploration" and not (
         args.venue_or_window
         and args.domain
@@ -1371,10 +1997,13 @@ def cmd_question(args: argparse.Namespace) -> None:
     target = str(args.target).strip()
     if not target:
         raise SystemExit("A PI decision question requires a stable --target")
+    question_text = str(args.text).strip()
+    if not question_text:
+        raise SystemExit("A PI decision question requires non-empty --text")
     open_questions = active_questions(state) + deferred_questions(state)
     if any(q.get("decision_target") == target for q in open_questions):
         raise SystemExit(f"A PI question already exists for decision target: {target}")
-    if any(q.get("text") == args.text for q in open_questions):
+    if any(q.get("text") == question_text for q in open_questions):
         raise SystemExit("An identical PI decision question is already open")
     if args.layer in CHECKPOINT_LAYERS and not target.startswith(f"{args.layer}:"):
         raise SystemExit(
@@ -1397,7 +2026,7 @@ def cmd_question(args: argparse.Namespace) -> None:
         "decision_target": target,
         "target_revision": target_revision,
         "superseded_by": None,
-        "text": args.text,
+        "text": question_text,
         "priority": args.priority,
         "reason": args.reason,
         "recommendation": args.recommendation,
@@ -1433,8 +2062,11 @@ def cmd_answer(args: argparse.Namespace) -> None:
     question = matches[0]
     if question.get("status") not in {"PENDING_PI", "DEFERRED_PI"}:
         raise SystemExit(f"Question is not open: {args.id}")
+    decision_text = str(args.decision).strip()
+    if not decision_text:
+        raise SystemExit("A PI reply requires non-empty --decision")
     response = {
-        "text": args.decision,
+        "text": decision_text,
         "outcome": args.outcome,
         "created_at": now_iso(),
     }
@@ -1455,14 +2087,14 @@ def cmd_answer(args: argparse.Namespace) -> None:
         if not revisit:
             raise SystemExit("A deferred decision requires --revisit-condition")
         question["status"] = "DEFERRED_PI"
-        question["decision"] = args.decision
+        question["decision"] = decision_text
         question["outcome"] = "defer"
         question["answered_at"] = None
         question["deferred_at"] = now_iso()
         question["revisit_condition"] = revisit
     else:
         question["status"] = "ANSWERED"
-        question["decision"] = args.decision
+        question["decision"] = decision_text
         question["outcome"] = args.outcome
         question["answered_at"] = now_iso()
     refresh_pause(state)
@@ -1590,7 +2222,10 @@ def current_answered_approval(
 def cmd_notify(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
-    notification = append_notification(state, args.text)
+    notification_text = str(args.text).strip()
+    if not notification_text:
+        raise SystemExit("A notification requires non-empty --text")
+    notification = append_notification(state, notification_text)
     save_state(path, state)
     print(
         json.dumps(
@@ -1645,6 +2280,60 @@ def compact_recent_instruction_updates(maintenance: dict[str, Any]) -> None:
         )
 
 
+def compact_recent_scope_removals(maintenance: dict[str, Any]) -> None:
+    removals = maintenance.setdefault("recent_scope_removals", [])
+    excess = max(0, len(removals) - RECENT_INSTRUCTION_UPDATE_LIMIT)
+    if excess:
+        del removals[:excess]
+        maintenance["compacted_scope_removal_count"] = (
+            int(maintenance.get("compacted_scope_removal_count", 0)) + excess
+        )
+
+
+def instruction_scope_removal_source(
+    state: dict[str, Any],
+    args: argparse.Namespace,
+    audit: dict[str, Any],
+    scope_exists: bool,
+) -> dict[str, str]:
+    if not scope_exists:
+        if args.decision_id or args.pi_decision or args.pi_outcome:
+            raise SystemExit(
+                "A missing instruction scope is pruned autonomously; omit decision arguments"
+            )
+        return {"type": "autonomous_missing_scope_prune"}
+    expected_target = instruction_scope_target(audit)
+    if args.decision_id:
+        question = current_answered_approval(
+            state,
+            args.decision_id,
+            "instructions",
+            expected_target,
+            "removal of an existing instruction-audit scope",
+        )
+        return {
+            "type": "answered_question",
+            "question_id": args.decision_id,
+            "decision": str(question["decision"]),
+            "outcome": str(question["outcome"]),
+        }
+    decision = str(args.pi_decision or "").strip()
+    if not decision:
+        raise SystemExit(
+            "Removing an instruction scope whose directory still exists requires "
+            f"--decision-id for target {expected_target!r} or the user's actual --pi-decision"
+        )
+    if args.pi_outcome not in APPROVING_OUTCOMES:
+        raise SystemExit(
+            "Direct removal of an existing instruction scope requires --pi-outcome approve or select"
+        )
+    return {
+        "type": "direct_pi_instruction",
+        "decision": decision,
+        "outcome": args.pi_outcome,
+    }
+
+
 def audit_covers_target(state_path: Path, audit: dict[str, Any], target: Path) -> bool:
     project_root = project_root_for_state(state_path).resolve()
     audited_cwd = (project_root / str(audit.get("scope_cwd") or ".")).resolve()
@@ -1697,10 +2386,14 @@ def canonical_source_receipts(
 def cmd_agents_audit(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
-    audit = analyze_project_instructions(path, args.cwd, args.fallback_name)
     maintenance = state["instruction_maintenance"]
     audits = maintenance.setdefault("audits_by_scope", {})
-    key = instruction_scope_key(audit)
+    _, descriptor = normalized_instruction_scope(path, args.cwd, args.fallback_name)
+    key = instruction_scope_key(descriptor)
+    bootstrapped = key not in audits
+    if bootstrapped:
+        require_execution_active(state, "bootstrap a new project-instruction audit scope")
+    audit = analyze_project_instructions(path, args.cwd, args.fallback_name)
     changed_scopes = []
     for stored_key, current in current_instruction_audits(path, maintenance).items():
         previous = audits[stored_key]
@@ -1722,7 +2415,6 @@ def cmd_agents_audit(args: argparse.Namespace) -> None:
             )
         )
         raise SystemExit(2)
-    bootstrapped = key not in audits
     if bootstrapped:
         audits[key] = audit
         save_state(path, state)
@@ -1741,9 +2433,68 @@ def cmd_agents_audit(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+def cmd_agents_scope_remove(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    require_execution_active(state, "remove a project-instruction audit scope")
+    maintenance = state["instruction_maintenance"]
+    audits = maintenance.get("audits_by_scope", {})
+    scope_path, descriptor = normalized_instruction_scope(
+        path, args.cwd, args.fallback_name
+    )
+    key = instruction_scope_key(descriptor)
+    previous = audits.get(key)
+    if not isinstance(previous, dict):
+        raise SystemExit(
+            f"Instruction-audit scope is not recorded: {descriptor['scope_cwd']}"
+        )
+    scope_exists = scope_path.is_dir()
+    source = instruction_scope_removal_source(
+        state, args, previous, scope_exists
+    )
+    receipt = {
+        "scope_key": key,
+        "scope_cwd": previous.get("scope_cwd"),
+        "fallback_filenames": previous.get("fallback_filenames") or [],
+        "scope_existed_at_removal": scope_exists,
+        "reason": args.reason,
+        "summary": args.summary,
+        "previous_status": previous.get("status"),
+        "previous_observed_paths": [
+            item.get("path") for item in previous.get("observed_files", [])
+        ],
+        "decision_source": source,
+        "removed_at": now_iso(),
+    }
+    del audits[key]
+    maintenance.setdefault("recent_scope_removals", []).append(receipt)
+    compact_recent_scope_removals(maintenance)
+    if scope_exists:
+        consume_question(
+            state,
+            args.decision_id,
+            {"type": "instruction_scope_remove", "scope_key": key},
+        )
+    notification = append_notification(state, f"项目说明审计范围维护：{args.summary}")
+    refresh_pause(state)
+    save_state(path, state)
+    print(
+        json.dumps(
+            {
+                "removed_scope": receipt,
+                "notification": notification,
+                "state": state_summary(path, state),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
 def cmd_agents_record(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
+    require_execution_active(state, "record a project-instruction change")
     maintenance = state["instruction_maintenance"]
     audits = maintenance.get("audits_by_scope", {})
     if not audits:
@@ -1980,17 +2731,40 @@ def checkpoint_payload(
     if args.layer == "compass":
         if not (args.venue_or_window and args.domain):
             raise SystemExit("Compass confirmation requires --venue-or-window and --domain")
+        previous = state["layer_checkpoints"].get("compass", {})
+        previous_payload = previous.get("payload") or {}
+        if args.clear_starting_concept:
+            starting_concept = "UNSET"
+        elif args.starting_concept is not None:
+            starting_concept = args.starting_concept or "UNSET"
+        else:
+            starting_concept = previous_payload.get("starting_concept") or "UNSET"
         return {
             "venue_or_window": args.venue_or_window,
             "domain": args.domain,
-            "starting_concept": args.starting_concept or "UNSET",
+            "starting_concept": starting_concept,
         }
     if args.layer == "direction":
         if not checkpoint_usable(state_path, state, "compass"):
             raise SystemExit("Cannot confirm direction before a complete research compass")
+        minimum_gain = (
+            MIN_PAPER_READY_GAIN_POINTS
+            if args.minimum_paper_gain_points is None
+            else args.minimum_paper_gain_points
+        )
+        if (
+            not finite_number(minimum_gain)
+            or minimum_gain < MIN_PAPER_READY_GAIN_POINTS
+            or minimum_gain > 100.0
+        ):
+            raise SystemExit(
+                "--minimum-paper-gain-points must be a finite number from 1 to 100; "
+                "a project may set a stricter bar but cannot lower the 1-point floor"
+            )
         required = {
             "task_type": args.task_type,
             "dataset": args.dataset,
+            "unexposed_dataset_search": args.unexposed_dataset_search,
             "competitive_bar": args.competitive_bar,
             "novelty_sufficiency": args.novelty_sufficiency,
             "generalization_requirement": args.generalization_requirement,
@@ -2004,11 +2778,13 @@ def checkpoint_payload(
         return {
             "task_type": args.task_type,
             "dataset": args.dataset,
+            "unexposed_dataset_search": args.unexposed_dataset_search,
             "evidence_standard": {
                 "competitive_bar": args.competitive_bar,
                 "novelty_sufficiency": args.novelty_sufficiency,
                 "generalization_requirement": args.generalization_requirement,
                 "paper_ready_threshold": args.paper_ready_threshold,
+                "minimum_paper_gain_points": float(minimum_gain),
             },
         }
     if args.layer == "science":
@@ -2062,17 +2838,68 @@ def checkpoint_payload(
             raise SystemExit("Paper handoff requires phase paper_ready_pending_pi")
         if not state.get("paper_ready_assessment"):
             raise SystemExit("Paper handoff requires a recorded paper-ready assessment")
-        assessment_path = resolve_stored_path(
-            state_path, state["paper_ready_assessment"].get("path")
-        )
-        if not assessment_path or not assessment_path.is_file():
-            raise SystemExit("The recorded paper-ready assessment is unavailable")
+        if not paper_ready_assessment_usable(state_path, state):
+            raise SystemExit(
+                "The recorded paper-ready assessment is missing, changed since the gate, "
+                "or no longer tied to the active L1/L2 checkpoints"
+            )
         return required
     raise SystemExit(f"Unsupported checkpoint layer: {args.layer}")
 
 
+def mark_checkpoint_record_stale(
+    state_path: Path,
+    layer: str,
+    checkpoint: dict[str, Any],
+    reason: str,
+    replacement_id: str,
+) -> None:
+    record = resolve_stored_path(state_path, checkpoint.get("record_path"))
+    if not record or not record.is_file():
+        return
+    stale_status = f"STALE_AFTER_{reason.upper()}"
+    if layer == "direction":
+        text = record.read_text(encoding="utf-8")
+        text = replace_managed_section(
+            text,
+            "DIRECTION_STANDARD_CURRENT",
+            "## Project evidence standard\n\n"
+            f"- Status: `{stale_status}`\n"
+            f"- Previous checkpoint: `{checkpoint.get('id')}`\n"
+            f"- Invalidated by: `{replacement_id}`\n"
+            "- Next action: adopt a new L1 evidence standard with the direction",
+            "## Project evidence standard",
+        )
+        text = replace_managed_section(
+            text,
+            "DIRECTION_DECISION_CURRENT",
+            "## Current PI decision\n\n"
+            f"- Status: `{stale_status}`\n"
+            f"- Previous checkpoint: `{checkpoint.get('id')}`\n"
+            f"- Invalidated by: `{replacement_id}`\n"
+            "- Next action: present and confirm a new L1 task-dataset direction",
+            "## Current PI decision",
+        )
+        atomic_write_text(record, text)
+    elif layer == "science":
+        text = record.read_text(encoding="utf-8")
+        text = replace_science_current_block(
+            text,
+            f"L2 status: `{stale_status}`  \n"
+            f"Previous checkpoint: `{checkpoint.get('id')}`  \n"
+            f"Invalidated by: `{replacement_id}`  \n"
+            "Next action: remap or reconfirm the scientific story inside the active L1  \n"
+            f"Last material update: {now_iso()}",
+        )
+        atomic_write_text(record, text)
+
+
 def invalidate_checkpoint(
-    state: dict[str, Any], layer: str, reason: str, replacement_id: str
+    state_path: Path,
+    state: dict[str, Any],
+    layer: str,
+    reason: str,
+    replacement_id: str,
 ) -> None:
     previous = state["layer_checkpoints"][layer]
     if previous.get("status") == "UNSET":
@@ -2091,6 +2918,9 @@ def invalidate_checkpoint(
     stale = dict(previous)
     stale["status"] = f"STALE_AFTER_{reason.upper()}"
     stale["decision_source"] = {"type": reason, "replacement_id": replacement_id}
+    mark_checkpoint_record_stale(
+        state_path, layer, previous, reason, replacement_id
+    )
     state["layer_checkpoints"][layer] = stale
 
 
@@ -2098,6 +2928,8 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
     require_execution_active(state, "confirm a scientific checkpoint")
+    args.id = validate_checkpoint_id(args.id)
+    reject_irrelevant_checkpoint_fields(args)
     payload = checkpoint_payload(args, path, state)
     source = approving_decision_source(state, args, args.layer)
     record, stored, _ = normalize_project_record(path, args.record)
@@ -2128,6 +2960,11 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         {"type": "checkpoint", "layer": args.layer, "id": args.id},
     )
     digest = sha256_file(record)
+    if args.layer == "paper":
+        assessment = state.get("paper_ready_assessment") or {}
+        assessment_path = resolve_stored_path(path, assessment.get("path"))
+        if assessment_path is not None and assessment_path.resolve() == record.resolve():
+            assessment["sha256_after_handoff"] = digest
     summary = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     state["layer_checkpoints"][args.layer] = {
         "status": "CONFIRMED_BY_PI",
@@ -2141,17 +2978,17 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     }
     if args.layer == "compass":
         for layer in ("direction", "science", "paper"):
-            invalidate_checkpoint(state, layer, "compass_change", args.id)
+            invalidate_checkpoint(path, state, layer, "compass_change", args.id)
         state["paper_ready_assessment"] = None
         state["phase"] = "exploration"
     elif args.layer == "direction":
         for layer in ("science", "paper"):
-            invalidate_checkpoint(state, layer, "direction_change", args.id)
+            invalidate_checkpoint(path, state, layer, "direction_change", args.id)
         state["paper_ready_assessment"] = None
         state["phase"] = "confirmed_project"
         ensure_l2_scaffold(path, args.id, payload)
     elif args.layer == "science":
-        invalidate_checkpoint(state, "paper", "science_change", args.id)
+        invalidate_checkpoint(path, state, "paper", "science_change", args.id)
         state["paper_ready_assessment"] = None
         state["phase"] = "confirmed_project"
     elif args.layer == "paper":
@@ -2167,6 +3004,14 @@ def cmd_phase(args: argparse.Namespace) -> None:
     require_execution_active(state, "advance the workflow phase")
     current = state["phase"]
     target = args.set
+    assessment_args_present = bool(args.assessment) or any(
+        getattr(args, field) is not None for field in PAPER_ASSESSMENT_CLI_FIELDS
+    )
+    if target != "paper_ready_pending_pi" and assessment_args_present:
+        raise SystemExit(
+            "Paper-assessment arguments are used only when entering "
+            "paper_ready_pending_pi"
+        )
     allowed = {
         ("discussion", "exploration"),
         ("exploration", "confirmed_project"),
@@ -2189,23 +3034,59 @@ def cmd_phase(args: argparse.Namespace) -> None:
         if not args.assessment:
             raise SystemExit("Entering paper-ready phase requires --assessment")
         missing = [
-            field for field in PAPER_ASSESSMENT_FIELDS if not getattr(args, field)
+            field
+            for field in PAPER_ASSESSMENT_TEXT_FIELDS
+            if not isinstance(getattr(args, field), str)
+            or not getattr(args, field).strip()
         ]
+        missing.extend(
+            field
+            for field in ("metric_scale", *PAPER_ASSESSMENT_NUMERIC_FIELDS)
+            if getattr(args, field) is None
+        )
         if missing:
             raise SystemExit(
                 "Paper-ready assessment is missing structured fields: "
                 + ", ".join(missing)
             )
+        direction_payload = state["layer_checkpoints"]["direction"]["payload"]
+        science_payload = state["layer_checkpoints"]["science"]["payload"]
+        minimum_gain = direction_payload["evidence_standard"][
+            "minimum_paper_gain_points"
+        ]
+        improvement_points = calculate_improvement_points(
+            args.metric_scale, args.baseline_score, args.our_score
+        )
+        if improvement_points + 1e-9 < minimum_gain:
+            raise SystemExit(
+                "Paper-ready gate not met: our primary score improves over the strongest "
+                "recent top-conference protocol-matched baseline by "
+                f"{improvement_points:.10g} percentage points, below the configured "
+                f"{minimum_gain:.10g}-point floor. Continue experiments; do not ask the PI "
+                "for a paper decision yet."
+            )
         record, stored, _ = normalize_project_record(path, args.assessment)
         assessment_payload = {
             "direction_id": state["layer_checkpoints"]["direction"].get("id"),
             "science_id": state["layer_checkpoints"]["science"].get("id"),
-            **{field: getattr(args, field) for field in PAPER_ASSESSMENT_FIELDS},
+            "current_task": direction_payload["task_type"],
+            "dataset": direction_payload["dataset"],
+            "current_work_problem": science_payload["problem"],
+            "innovation": science_payload["innovation_claim"],
+            "core_mechanism": science_payload["core_mechanism"],
+            "minimum_paper_gain_points": float(minimum_gain),
+            "improvement_points": improvement_points,
+            **{field: getattr(args, field) for field in PAPER_ASSESSMENT_CLI_FIELDS},
         }
+        if not paper_assessment_complete(assessment_payload):
+            raise SystemExit("Internal paper-ready assessment validation failed")
         append_paper_assessment_receipt(record, assessment_payload)
         state["paper_ready_assessment"] = {
             "path": stored,
             "sha256_at_gate": sha256_file(record),
+            "payload_sha256_at_gate": paper_assessment_payload_sha256(
+                assessment_payload
+            ),
             "recorded_at": now_iso(),
             **assessment_payload,
         }
@@ -2310,13 +3191,19 @@ def cmd_job_add(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
     require_execution_active(state, "add an active job")
-    if any(job.get("id") == args.id for job in state["jobs"]):
-        raise SystemExit(f"Job already exists: {args.id}")
+    job_id = str(args.id).strip()
+    description = str(args.description).strip()
+    if not job_id:
+        raise SystemExit("A job requires non-empty --id")
+    if not description:
+        raise SystemExit("A job requires non-empty --description")
+    if any(job.get("id") == job_id for job in state["jobs"]):
+        raise SystemExit(f"Job already exists: {job_id}")
     if args.status in ACTIVE_JOB_STATUSES and not (args.command or args.session):
         raise SystemExit("An active job requires --command or --session")
     job = {
-        "id": args.id,
-        "description": args.description,
+        "id": job_id,
+        "description": description,
         "command": args.command,
         "session": args.session,
         "status": args.status,
@@ -2339,8 +3226,11 @@ def cmd_job_update(args: argparse.Namespace) -> None:
         raise SystemExit(f"Job not found: {args.id}")
     job = matches[0]
     new_status = args.status or job.get("status")
-    if state["paused_for_pi"] and new_status in ACTIVE_JOB_STATUSES and new_status != job.get("status"):
-        raise SystemExit("Cannot start or queue a job while PAUSED_FOR_PI")
+    if state["paused_for_pi"] and new_status in ACTIVE_JOB_STATUSES:
+        raise SystemExit(
+            "Cannot continue, poll, or advance an active job while PAUSED_FOR_PI; "
+            "only record a safe terminal status"
+        )
     for field in ("status", "session", "next_poll", "next_action", "result"):
         value = getattr(args, field)
         if value is not None:
@@ -2359,6 +3249,11 @@ def cmd_job_remove(args: argparse.Namespace) -> None:
     if not matches:
         raise SystemExit(f"Job not found: {args.id}")
     job = matches[0]
+    if state["paused_for_pi"] and job.get("status") in ACTIVE_JOB_STATUSES:
+        raise SystemExit(
+            "Cannot remove tracking for an active job while PAUSED_FOR_PI; "
+            "record its safe terminal status first"
+        )
     if job.get("status") in ACTIVE_JOB_STATUSES and not args.force:
         raise SystemExit("Refusing to remove an active job without --force")
     state["jobs"] = [item for item in state["jobs"] if item.get("id") != args.id]
@@ -2460,6 +3355,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agents_audit_parser.set_defaults(func=cmd_agents_audit)
 
+    agents_scope_remove_parser = subparsers.add_parser(
+        "agents-scope-remove",
+        help="Remove one saved AGENTS audit scope with appropriate authority",
+    )
+    agents_scope_remove_parser.add_argument("state")
+    agents_scope_remove_parser.add_argument(
+        "--cwd", help="Recorded project subdirectory scope to remove"
+    )
+    agents_scope_remove_parser.add_argument(
+        "--fallback-name",
+        action="append",
+        default=[],
+        help="Fallback basename set used by the recorded scope; repeat in precedence order",
+    )
+    agents_scope_remove_parser.add_argument("--reason", required=True)
+    agents_scope_remove_parser.add_argument(
+        "--summary", required=True, help="Plain-language notification for the user"
+    )
+    add_optional_decision_source_args(agents_scope_remove_parser)
+    agents_scope_remove_parser.set_defaults(func=cmd_agents_scope_remove)
+
     agents_record_parser = subparsers.add_parser(
         "agents-record",
         help="Record one audited AGENTS instruction-file update",
@@ -2505,6 +3421,44 @@ def build_parser() -> argparse.ArgumentParser:
     phase_parser.add_argument("--remaining-objection")
     phase_parser.add_argument("--necessary-work")
     phase_parser.add_argument("--optional-work")
+    phase_parser.add_argument(
+        "--specific-method", help="Concrete implementation of the confirmed mechanism"
+    )
+    phase_parser.add_argument(
+        "--final-results", help="Plain-language final decision-relevant result summary"
+    )
+    phase_parser.add_argument(
+        "--recent-top-conference-baseline",
+        help="Identity of the strongest recent top-conference matched baseline found",
+    )
+    phase_parser.add_argument(
+        "--baseline-venue-year", help="Venue and year for that baseline"
+    )
+    phase_parser.add_argument(
+        "--baseline-search-scope",
+        help="Venues, year range, and search date supporting the strongest-baseline claim",
+    )
+    phase_parser.add_argument(
+        "--baseline-source", help="Primary paper or official source for the baseline"
+    )
+    phase_parser.add_argument(
+        "--protocol-match-evidence",
+        help="Why task, data/split, labels, inference information, metric, and evaluation match",
+    )
+    phase_parser.add_argument(
+        "--primary-metric", help="Higher-is-better primary metric used for the hard gate"
+    )
+    phase_parser.add_argument(
+        "--metric-scale",
+        choices=("unit_interval", "percentage"),
+        help="Use unit_interval for 0-1 scores or percentage for 0-100 scores",
+    )
+    phase_parser.add_argument(
+        "--baseline-score", type=float, help="Matched baseline score on the primary metric"
+    )
+    phase_parser.add_argument(
+        "--our-score", type=float, help="Our score on the same primary metric and protocol"
+    )
     phase_parser.set_defaults(func=cmd_phase)
 
     confirm_parser = subparsers.add_parser(
@@ -2517,13 +3471,25 @@ def build_parser() -> argparse.ArgumentParser:
     add_decision_source_args(confirm_parser)
     confirm_parser.add_argument("--venue-or-window")
     confirm_parser.add_argument("--domain")
-    confirm_parser.add_argument("--starting-concept")
+    concept_group = confirm_parser.add_mutually_exclusive_group()
+    concept_group.add_argument("--starting-concept")
+    concept_group.add_argument(
+        "--clear-starting-concept",
+        action="store_true",
+        help="Explicitly clear the current optional starting concept",
+    )
     confirm_parser.add_argument("--task-type")
     confirm_parser.add_argument("--dataset")
+    confirm_parser.add_argument("--unexposed-dataset-search")
     confirm_parser.add_argument("--competitive-bar")
     confirm_parser.add_argument("--novelty-sufficiency")
     confirm_parser.add_argument("--generalization-requirement")
     confirm_parser.add_argument("--paper-ready-threshold")
+    confirm_parser.add_argument(
+        "--minimum-paper-gain-points",
+        type=float,
+        help="Project paper-ready gain floor in percentage points; defaults to 1 and cannot be lower",
+    )
     confirm_parser.add_argument("--direction-id")
     confirm_parser.add_argument("--problem")
     confirm_parser.add_argument("--core-mechanism")

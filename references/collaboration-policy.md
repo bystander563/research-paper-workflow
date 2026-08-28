@@ -99,6 +99,30 @@ outcomes. Each question contains:
 Do not ask the user to approve routine implementation work or an obviously
 failed branch.
 
+## In-progress drift check
+
+When the user asks to understand the current work, questions why a method is
+being tried, or says the agent may be off course, treat that exchange as a
+read-only alignment audit. Do not interpret questions, suggestions, or partial
+understanding as permission to pass a gate.
+
+Answer in plain language with:
+
+1. the confirmed compass and L1 direction being served;
+2. the active L2 problem, or the exploratory problem if L2 is not confirmed;
+3. the exact hypothesis and predicted observable change of the current run;
+4. why the implementation is the minimum useful test of that hypothesis;
+5. the current evidence, uncertainty, and condition that would stop or redirect
+   this branch.
+
+If the current action cannot be traced through that chain, mark it as suspected
+drift and stop only the dependent branch at a safe point. Continue unrelated
+authorized work. Repair an implementation-level mismatch autonomously; create a
+PI question when recovery requires changing confirmed compass, L1, or L2. A
+user correction during this discussion becomes authority only when it clearly
+selects, approves, rejects, or defers a scoped choice; record that decision in
+the normal controller state.
+
 ## Twenty-minute behavior
 
 The 20-minute window batches questions; it grants no authority and does not
@@ -138,8 +162,11 @@ itself.
 
 Register long-running active work with `job-add` and update it with `job-update`
 so another context can recover its command/session and next action. The
-controller blocks a new active job while paused but still allows an existing job
-to be marked complete or failed. It does not itself schedule or poll jobs.
+controller blocks a new active job and active-to-active polling or advancement
+while paused. An existing job may only be recorded at a safe terminal status:
+`completed`, `failed`, `cancelled`, or `blocked`. It does not itself schedule or
+poll jobs. It also blocks bootstrapping, changing, or removing project-
+instruction audit scopes until the active PI-question count falls below five.
 
 Project-instruction questions use the same queue and count: set `layer` to
 `instructions` and target the exact project-relative file, such as
@@ -166,46 +193,44 @@ Within the current project and authorization:
 ## Paper-ready decision
 
 Treat “good enough to write” as a PI decision. It requires confirmed L1/L2 state
-and assessment against the user-adopted evidence standard. Present:
+and assessment against the user-adopted evidence standard. Before creating that
+question, verify and source the strongest recent top-conference
+protocol-matched baseline, clear the configured gain floor of at least 1
+percentage point, and generate the project-local paper-decision report. Present:
 
+- the current task, dataset, problem in current/nearest work, innovation, and concrete method;
+- final results plus the baseline venue/year/source and search scope,
+  protocol-match evidence, both scores, metric scale, computed point gain, and required floor;
 - the narrowest supported result;
 - the strongest matched external comparison;
 - the strongest remaining reviewer objection;
 - necessary versus optional additional work;
 - plausible paper positions and the agent recommendation.
 
-While waiting, verify artifacts and organize evidence. Do not silently choose
-the final claim, title, or a new evidence standard.
+Only then ask the user whether to enter writing and which claim to use. While
+waiting, verify artifacts and organize evidence. Do not silently choose the
+final claim, title, or a new evidence standard.
 
 ## Durable control state
 
-When project writes are authorized, use `scripts/research_queue.py` with the
-layered files from [research-state.md](research-state.md):
+When project writes are authorized, resolve the controller from the directory
+containing the active `SKILL.md`, then use it with the layered files from
+[research-state.md](research-state.md):
 
 ```text
 <project>/.codex/research-paper-workflow.json
 <project>/.codex/research/
 ```
 
-Useful commands:
+Use `<controller> --help` for the complete CLI. The common collaboration
+operations are:
 
 ```text
-python scripts/research_queue.py init STATE --project NAME
-python scripts/research_queue.py init STATE --project NAME --phase exploration --venue-or-window "ICASSP" --domain "sMRI" --pi-decision "用户确认投稿目标和领域" --pi-outcome select
-python scripts/research_queue.py audit STATE
-python scripts/research_queue.py agents-audit STATE --cwd PROJECT_SUBDIRECTORY
-python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "..." --summary "..." --canonical-source .codex/research/L2/D001.md
-python scripts/research_queue.py question STATE --layer direction --target direction:D001 --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
-python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
-python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"
-python scripts/research_queue.py reopen STATE --id Q002 --reason "外部 baseline 复现已完成"
-python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..."
-python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
-python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..."
-python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
-python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-action "..."
-python scripts/research_queue.py notify STATE --text "..."
-python scripts/research_queue.py status STATE
+python <controller> status STATE
+python <controller> question STATE --layer direction --target direction:D001 --text "..."
+python <controller> answer STATE --id Q001 --decision "..." --outcome select
+python <controller> answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "..."
+python <controller> job-add STATE --id J001 --description "..." --command "..." --status running
 ```
 
 Use `freeze` and `unfreeze` for additional user-fixed fields. Direct decisions

@@ -28,7 +28,9 @@ state. Run `agents-audit STATE --cwd WORKING_DIRECTORY` as well when project
 instructions exist, the working directory changed, or the controller has no
 snapshot for that scope. An existing-scope audit compares against its saved
 snapshot and never accepts changed content; use `agents-record` after classifying
-an intentional change. Legacy approvals without the current structured payload
+an intentional change. If an audited working-directory scope no longer exists,
+remove that stale scope with `agents-scope-remove`; removing a scope whose
+directory still exists requires PI approval. Legacy approvals without the current structured payload
 or scoped decision receipt are reported as needing audit; existing code and
 results do not waive that decision. Follow
 [agents-maintenance.md](agents-maintenance.md) for instruction content and
@@ -78,6 +80,8 @@ Scout a small ranked set of task-dataset candidates. For each, check:
 - whether credible performance headroom remains;
 - nearest-work collision risk;
 - availability of meaningful published comparators;
+- at least one credible dataset not previously exposed in the project, or a
+  documented search boundary and blocker;
 - time, data, and compute feasibility;
 - fit to the venue or submission window.
 
@@ -89,13 +93,15 @@ Prepare an L1 decision packet containing:
 
 1. the ranked candidates and agent recommendation;
 2. the proposed task type and dataset or dataset bundle;
-3. the project evidence standard, stated as user choices:
+3. the mandatory unexposed-dataset search result and whether the agent
+   recommends adopting it;
+4. the project evidence standard, stated as user choices:
    - required competitive bar, such as SOTA, near-SOTA, or another explicit bar;
    - novelty sufficiency standard;
    - whether generalization, a second dataset, or another evidence axis is
      required;
    - what result would justify considering paper writing;
-4. unresolved risks and what can continue while the user decides.
+5. unresolved risks and what can continue while the user decides.
 
 Gate `G1 L1_CONFIRMED`:
 
@@ -106,7 +112,11 @@ Gate `G1 L1_CONFIRMED`:
 - the decision outcome is `select` or `approve`, not merely “answered”;
 - a queued approval is scoped to this direction ID and consumed only here;
 - the structured checkpoint contains task, dataset, competitive bar, novelty
-  sufficiency, generalization requirement, and paper-ready threshold;
+  sufficiency, generalization requirement, paper-ready threshold, and the
+  unexposed-dataset search result;
+- the numeric paper-gain floor is at least 1 percentage point over the strongest
+  recent top-conference protocol-matched baseline; a project may raise but not
+  lower it;
 - no unresolved contradiction exists with another user-frozen field.
 
 Only then enter `confirmed_project`. Replacing the task, dataset, or adopted
@@ -126,9 +136,9 @@ Within the confirmed L1 direction:
 7. compare the resulting ceiling summary with real external methods.
 
 The baseline roster must be identified and source-checked before broad tuning.
-The full matched local reproduction need not be complete at that moment. Before
-calling a result paper-worthy, however, at least the key protocol-matched
-comparison must exist or remain explicitly `BLOCKED`/`BASELINE_INCOMPLETE`.
+The full matched local reproduction need not be complete at that moment. A
+`BLOCKED` or `BASELINE_INCOMPLETE` key comparison may coexist with L2 method
+work, but it cannot support a paper-worthy judgment or pass G3.
 
 Prepare an L2 decision packet containing:
 
@@ -177,21 +187,38 @@ longer sensible, present a proposed L1 change for user decision.
 Gate `G3 PAPER_DECISION_READY`:
 
 - G1 and G2 remain valid;
+- a primary source identifies the strongest recent top-conference baseline found
+  for the same protocol, and the report explains the task, dataset/split, labels,
+  supervision/inference information, metric, and evaluation match;
+- on a higher-is-better primary metric, our result exceeds that baseline by at
+  least the L1 floor, which can never be below 1 percentage point (`0.01` on a
+  `0–1` scale or `1.0` on a `0–100` scale);
 - the narrowest supported claim is explicit;
 - the strongest protocol-matched external comparison is explicit;
 - the remaining reviewer-level objection is explicit;
 - necessary and optional additional work are separated;
 - the package is assessed against every recorded L1 evidence criterion.
 
-Enter `paper_ready_pending_pi` and ask whether to start paper writing and what
+Before asking the user, generate a readable project-local paper-decision report
+covering the current task, dataset, problem in current/nearest work, innovation, concrete
+method, final results, baseline identity/venue/year/source and search scope,
+protocol-match evidence, metric scale, baseline score, our score, computed point gain, required floor,
+and the remaining G3 assessments. Only after that report exists may the workflow
+enter `paper_ready_pending_pi` and ask whether to start paper writing and what
 headline claim to use. This is a real user decision even when the agent strongly
 recommends proceeding.
 
-The transition into `paper_ready_pending_pi` requires a project-local durable assessment
-artifact and a structured receipt covering every L1 criterion, the narrowest
-supported claim, strongest matched comparison, remaining objection, and
-necessary versus optional work. It cannot be set at initialization or reached
-without complete typed L1/L2 checkpoints.
+The transition into `paper_ready_pending_pi` requires that project-local durable
+report and a structured receipt covering its scientific and numeric fields. The
+controller checks completeness, arithmetic, the configured floor, provenance,
+and artifact locking. It cannot determine whether a venue is genuinely top-tier
+or whether two protocols are scientifically matched; the agent must verify and
+source those claims before invoking the gate. The phase cannot be set at
+initialization or reached without complete typed L1/L2 checkpoints.
+
+The assessment is content-locked at this gate. If it changes before the PI
+decision is consumed, rebuild the assessment and present the changed meaning;
+the old decision must not authorize the rewritten evidence.
 
 If approved, record a typed `paper` checkpoint containing the confirmed science
 checkpoint, headline claim, durable record, and handoff target. Only then enter
@@ -221,9 +248,11 @@ Resume the underlying phase when the unanswered count falls below five unless
 the user asks to remain paused. A 20-minute timeout only batches questions; it
 never passes a gate.
 
-The controller rejects phase advancement and new active-job registration while
-paused. Answering questions, recording notifications, and marking already
-running jobs complete remain allowed.
+The controller rejects phase advancement, new active-job registration, and
+active-to-active polling or advancement while paused. It also rejects new
+project-instruction audit scopes and instruction-maintenance mutations.
+Answering questions, recording notifications, read-only status/audit checks, and
+marking an already-running job with a safe terminal status remain allowed.
 
 ## Active-job recovery
 
@@ -245,9 +274,10 @@ not schedule, poll, or terminate the process by itself.
 current phase lacks a complete typed checkpoint, a decision receipt is unscoped
 or incorrectly reused, a core field has conflicting authorities, a required
 evidence reference or durable record is missing, a paper-ready assessment is
-incomplete, a project checkpoint record is outside the project, a legacy
+incomplete or changed after its gate, a project checkpoint record is outside the project, a legacy
 approval needs audit, any audited instruction scope changed without a receipt,
-or an active job cannot be resumed. It verifies provenance
+non-self-referential L2 evidence changed after confirmation, or an active job
+cannot be resumed. It verifies provenance
 and availability, not scientific adequacy. `agents-audit` separately reports
 instruction precedence and size without treating an oversized file as a
 scientific checkpoint failure. Run the control audit at startup, after

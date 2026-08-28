@@ -16,6 +16,10 @@ claim and not automatically frozen. If the user says the concept itself must
 remain central, record that as a distinct project-specific concept constraint
 rather than creating a second copy of the compass field.
 
+When updating only the venue/window or domain, carry the current optional
+starting concept forward. Clear it only with the user's explicit instruction;
+the controller exposes `--clear-starting-concept` for that distinction.
+
 Verify current venue timing and scope before spending heavily, because conference dates and calls change. Do not silently redirect the work to a different venue or domain merely because another benchmark is easier.
 
 ## Keep one research compass
@@ -54,7 +58,12 @@ A dataset is promising for that task when:
 
 Reject or narrow a task when the dataset supplies only a proxy label that cannot support the claim.
 
-Do not require a second, new, external, sealed, or previously unexposed dataset by default. If current data limit the strength of a generalization claim, report that limitation and the optional value of additional data; the user decides whether obtaining such data becomes a project requirement.
+Always search for at least one credible dataset that has not previously been
+used or exposed in the project, and report the candidate, task fit, access,
+labels, likely protocol comparability, and cost. If none is credible, report the
+search boundary and blocker. The search is mandatory; using the candidate as a
+second dataset, generalization test, or paper requirement is an L1 decision.
+Do not invent a universal sealed-set, external-label, or evaluation protocol.
 
 Keep a small ranked L1 shortlist rather than silently choosing one pair. Once meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and cost are known well enough to compare the candidates, ask the user to select the active task-dataset direction and project evidence standard. The standard covers the competitive target, novelty sufficiency, generalization or second-dataset expectation, and paper-decision threshold. Cheap inspection and feasibility work may precede this choice; sustained method search and broad tuning may not.
 
@@ -105,6 +114,13 @@ Before calling a method promising or giving it a broad tuning budget, identify a
 
 Verify task, prediction unit, dataset version, split, supervision, information available at inference, metric definition, and evaluation date. A larger published number under a different protocol is historical context, not an apples-to-apples winner. Label it `REPORTED_NOT_MATCHED`; reproduce or adapt decision-critical baselines under the current protocol when feasible.
 
+For the eventual paper decision, identify the strongest recent top-conference
+baseline found that can be compared under the same protocol. Record its paper,
+venue/year, primary source, score, literature search venues/year range/date, and why the task, data/split, labels,
+supervision/inference information, metric, and evaluation procedure match. A
+baseline that is merely recent, merely highly cited, or numerically larger under
+a different protocol does not satisfy this role.
+
 If the current result table contains only our own methods, the scientific comparison is incomplete regardless of how many internal variants were tried. Prioritize external comparison work before generating more variants. Before calling a result paper-worthy, obtain at least the key protocol-matched comparison. When a key implementation is unavailable or too costly, record the exact blocker and the weakest defensible claim that remains.
 
 ## Derive the method from the problem
@@ -146,7 +162,7 @@ Treat a candidate as promising when most of the following hold:
 - there is a plausible path from the current result to a competitive result;
 - the expected scientific value justifies the remaining compute and time.
 
-In addition, the baseline roster must exist and expose a plausible route to competitiveness. A candidate can remain in `METHOD_CHEAP_SCREEN` while external baselines are being verified, but it cannot be called paper-worthy from internal comparisons alone.
+In addition, the baseline roster must exist and expose a plausible route to competitiveness. A candidate can remain in `METHOD_CHEAP_SCREEN` while external baselines are being verified, but it cannot be called paper-worthy from internal comparisons alone. “Paper-worthy” requires a verified strongest recent top-conference protocol-matched baseline and at least a 1-percentage-point gain on the higher-is-better primary metric. Compute that as `(ours - baseline) * 100` for a `0–1` metric or `ours - baseline` for a `0–100` metric. A project may adopt a stricter L1 floor, never a lower one.
 
 For a promising candidate, choose a project-appropriate ceiling-search budget based on the venue timeline, available compute, and the number of viable alternatives. Tune hyperparameters and other permitted implementation choices using available compute, including an existing GPU by default. Continue until results saturate, gains show clear diminishing returns, the budget is reached, or the candidate loses its promise. The resulting "ceiling" is the best observed development-side result under the current project contract, not a universal upper bound or proof of generalization. Report the decision-relevant summary; do not require an archive of every attempt or the stopping rule.
 
@@ -162,37 +178,41 @@ Report a ceiling search to the user in plain language with:
 6. stability, failure cases, and remaining weaknesses;
 7. compute cost, estimated ceiling, and whether the evidence now looks paper-worthy.
 
+The ceiling summary may say “promising but not paper-decision ready” when the
+external comparison is incomplete or the gain is below the floor. Do not turn a
+promising internal result into a paper recommendation by wording alone.
+
 If a candidate has no credible potential, stop before broad tuning and move on; no individual negative-result record is required. Surface the failure only when it changes the research compass, exhausts or materially narrows the candidate pool, invalidates a serious premise, or affects an item marked `FROZEN_BY_PI`.
 
-## Candidate card
+## Candidate records by layer
 
-For each decision-relevant task-dataset-method candidate, keep a compact L2 card. Do not create cards for every implementation attempt:
+Before L1 confirmation, keep task-dataset candidates only in the compact L1
+shortlist. Each row or attached note covers meaning, task-data fit, headroom,
+nearest-work risk, external-baseline feasibility, cost, and recommendation. Do
+not create an L2 file for an unselected task-dataset pair. The shortlist also
+states the mandatory unexposed-dataset search result or its current blocker.
+
+After L1 confirmation, keep a compact L2 card only for a decision-relevant
+method or scientific-story candidate inside that direction:
 
 ```text
-研究罗盘 checkpoint / reference：
-L1 候选或已确认方向 reference：
-任务为什么有意义：
-任务与数据集为什么匹配：
-数据集为什么还有提升空间：
-最接近的工作及未解决点：
-近邻工作来源、检索日期与已验证事实：
-外部 baseline roster（数据集来源、近期最强可比、不同机制、强简单对照）：
-外部 baseline 的协议可比性和复现状态：
-观察到的具体问题：
-解决问题的直觉：
-对应的最小数学方法：
+L1 已确认方向 reference：
+最接近的工作、来源、检索日期与未解决点：
+外部 baseline roster、协议可比性与复现状态：
+观察到的具体问题与基线失败例子：
+解决直觉、预测诊断与最小数学方法：
 候选创新点及与近邻工作的差异：
-第一个可证伪实验：
-潜力筛选状态与证据：
-调参起点、当前最好结果与证据摘要（如适用）：
-我们的结果与外部 baseline 差距：
-L1 方向决策来源：
+第一个可证伪实验及潜力筛选证据：
+调参起点、当前最好结果与外部 baseline 差距（如适用）：
 L2 科学主线决策来源（如已确认）：
-本项目的论文就绪条件：
-预计时间和算力：
+剩余论文证据缺口、预计时间和算力：
 ```
 
-Keep a small ranked set of candidates rather than a long idea dump. A candidate may enter cheap data or baseline feasibility testing when the pair is plausible; sustained method work starts only after the user confirms L1. A promising method may be tuned autonomously, but becomes the active L2 story only after the user confirms the problem, mechanism, and innovation claim. Preserve L2 cards that received a user decision or materially support the active scientific interpretation; L3 trial detail remains discretionary.
+Keep a small ranked set rather than a long idea dump. Cheap data and baseline
+feasibility work may precede L1, but sustained method work starts only after L1
+confirmation. Preserve L2 cards that received a user decision or materially
+support the active scientific interpretation; L3 trial detail remains
+discretionary.
 
 ## Downstream decision rule
 

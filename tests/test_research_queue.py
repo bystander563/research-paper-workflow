@@ -110,8 +110,13 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli(*answer_args)
         return question_id
 
-    def confirm_direction(self, decision_id: str) -> None:
-        self.run_cli(
+    def confirm_direction(
+        self,
+        decision_id: str,
+        minimum_gain: float | None = None,
+        ok: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        args = [
             "confirm",
             self.state,
             "--layer",
@@ -126,6 +131,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "cross-site classification",
             "--dataset",
             "Dataset-A+Dataset-B",
+            "--unexposed-dataset-search",
+            "Dataset-C found as an unexposed transfer candidate",
             "--competitive-bar",
             "beat the strongest matched baseline",
             "--novelty-sufficiency",
@@ -134,7 +141,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             "second dataset required",
             "--paper-ready-threshold",
             "stable gain and matched external comparison",
-        )
+        ]
+        if minimum_gain is not None:
+            args.extend(["--minimum-paper-gain-points", str(minimum_gain)])
+        return self.run_cli(*args, ok=ok)
 
     def confirm_science(self, decision_id: str) -> None:
         self.run_cli(
@@ -168,7 +178,14 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.l2,
         )
 
-    def enter_paper_ready(self, assessment: Path, ok: bool = True) -> subprocess.CompletedProcess[str]:
+    def enter_paper_ready(
+        self,
+        assessment: Path,
+        ok: bool = True,
+        metric_scale: str = "unit_interval",
+        baseline_score: float = 0.80,
+        our_score: float = 0.82,
+    ) -> subprocess.CompletedProcess[str]:
         return self.run_cli(
             "phase",
             self.state,
@@ -194,6 +211,28 @@ class ResearchQueueCLITest(unittest.TestCase):
             "none",
             "--optional-work",
             "one sensitivity analysis",
+            "--specific-method",
+            "residual removal with a source-identifiability penalty",
+            "--final-results",
+            f"{our_score} versus {baseline_score} on the primary matched evaluation",
+            "--recent-top-conference-baseline",
+            "Baseline B, recent top-conference paper",
+            "--baseline-venue-year",
+            "SIGIR 2025",
+            "--baseline-search-scope",
+            "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28",
+            "--baseline-source",
+            "baseline citation and result table recorded in L2",
+            "--protocol-match-evidence",
+            "same dataset, split, labels, metric, and evaluation procedure",
+            "--primary-metric",
+            "balanced accuracy",
+            "--metric-scale",
+            metric_scale,
+            "--baseline-score",
+            str(baseline_score),
+            "--our-score",
+            str(our_score),
             ok=ok,
         )
 
@@ -222,6 +261,39 @@ class ResearchQueueCLITest(unittest.TestCase):
             ok=False,
         )
         self.assertNotEqual(result.returncode, 0)
+
+        ignored = self.root / "ignored-compass.json"
+        result = self.run_cli(
+            "init",
+            ignored,
+            "--project",
+            "ignored",
+            "--venue-or-window",
+            "ICASSP",
+            ok=False,
+        )
+        self.assertIn("require --phase exploration", result.stderr)
+        self.assertFalse(ignored.exists())
+
+    def test_checkpoint_rejects_fields_from_another_layer(self) -> None:
+        self.init_exploration()
+        question = self.add_answer("direction", "Choose D001?", outcome="select")
+        result = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "direction",
+            "--id",
+            "D001",
+            "--record",
+            self.l1,
+            "--decision-id",
+            question,
+            "--science-id",
+            "S001",
+            ok=False,
+        )
+        self.assertIn("does not use: --science-id", result.stderr)
 
     def test_exploration_init_requires_confirmed_compass(self) -> None:
         result = self.run_cli(
@@ -256,6 +328,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "task",
             "--dataset",
             "data",
+            "--unexposed-dataset-search",
+            "searched registry; candidate data-2 found",
             "--competitive-bar",
             "bar",
             "--novelty-sufficiency",
@@ -291,6 +365,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "task",
             "--dataset",
             "data",
+            "--unexposed-dataset-search",
+            "searched registry; candidate data-2 found",
             "--competitive-bar",
             "bar",
             "--novelty-sufficiency",
@@ -302,6 +378,19 @@ class ResearchQueueCLITest(unittest.TestCase):
             ok=False,
         )
         self.assertIn("cannot authorize", result.stderr)
+
+    def test_confirmed_checkpoint_requires_complete_authority_metadata(self) -> None:
+        self.init_exploration()
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["layer_checkpoints"]["compass"]["decision_source"]["decision"] = ""
+        state["layer_checkpoints"]["compass"]["record_sha256_at_confirmation"] = None
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        result = self.run_cli("audit", self.state, ok=False)
+        codes = {
+            issue["code"] for issue in json.loads(result.stdout)["control_issues"]
+        }
+        self.assertIn("COMPASS_CHECKPOINT_INCOMPLETE", codes)
+        self.assertIn("COMPASS_CONFIRMED_PAYLOAD_INCOMPLETE", codes)
 
     def test_full_typed_flow_reaches_paper_handoff(self) -> None:
         self.init_exploration()
@@ -346,10 +435,134 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertEqual(summary["phase"], "paper_handoff_approved")
         self.assertEqual(summary["control_issues"], [])
         self.assertIn("Confirmed paper checkpoint", assessment.read_text(encoding="utf-8"))
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("sha256_after_handoff", stored["paper_ready_assessment"])
         self.run_cli("audit", self.state)
+
+    def test_paper_assessment_drift_blocks_handoff_and_remains_detectable(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-drift.md"
+        assessment.write_text("# Paper ready\n\nPASS\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+        gated_text = assessment.read_text(encoding="utf-8")
+        gated_bytes = assessment.read_bytes()
+        status = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertTrue(status["paper_ready_assessment_usable"])
+
+        assessment.write_text(gated_text + "silent rewrite\n", encoding="utf-8")
+        changed = json.loads(self.run_cli("status", self.state).stdout)
+        changed_codes = {issue["code"] for issue in changed["control_issues"]}
+        self.assertFalse(changed["paper_ready_assessment_usable"])
+        self.assertIn("PAPER_READY_ASSESSMENT_CHANGED", changed_codes)
+        paper_q = self.add_answer("paper", "Use this assessment and claim?")
+        blocked = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "paper",
+            "--id",
+            "P001",
+            "--record",
+            assessment,
+            "--decision-id",
+            paper_q,
+            "--science-id",
+            "S001",
+            "--headline-claim",
+            "A narrow supported claim",
+            "--handoff-target",
+            "paper-submission-orchestrator",
+            ok=False,
+        )
+        self.assertIn("changed since the gate", blocked.stderr)
+
+        assessment.write_bytes(gated_bytes)
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "paper",
+            "--id",
+            "P001",
+            "--record",
+            assessment,
+            "--decision-id",
+            paper_q,
+            "--science-id",
+            "S001",
+            "--headline-claim",
+            "A narrow supported claim",
+            "--handoff-target",
+            "paper-submission-orchestrator",
+        )
+        assessment.write_text(
+            assessment.read_text(encoding="utf-8") + "post-approval rewrite\n",
+            encoding="utf-8",
+        )
+        after_handoff = json.loads(self.run_cli("status", self.state).stdout)
+        after_codes = {issue["code"] for issue in after_handoff["control_issues"]}
+        self.assertIn("PAPER_READY_ASSESSMENT_CHANGED", after_codes)
+        self.assertIn("PAPER_CHECKPOINT_RECORD_CHANGED", after_codes)
+
+    def test_paper_assessment_payload_tampering_is_detected(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-payload.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["paper_ready_assessment"]["our_score"] = 0.99
+        state["paper_ready_assessment"]["improvement_points"] = 19.0
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        status = json.loads(self.run_cli("status", self.state).stdout)
+        codes = {issue["code"] for issue in status["control_issues"]}
+        self.assertFalse(status["paper_ready_assessment_usable"])
+        self.assertIn("PAPER_READY_ASSESSMENT_PAYLOAD_CHANGED", codes)
+        paper_q = self.add_answer("paper", "Use this assessment and claim?")
+        blocked = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "paper",
+            "--id",
+            "P001",
+            "--record",
+            assessment,
+            "--decision-id",
+            paper_q,
+            "--science-id",
+            "S001",
+            "--headline-claim",
+            "A narrow supported claim",
+            "--handoff-target",
+            "paper-submission-orchestrator",
+            ok=False,
+        )
+        self.assertIn("missing, changed since the gate", blocked.stderr)
 
     def test_five_questions_pause_blocks_phase_advance(self) -> None:
         self.init_exploration()
+        self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "running screen",
+            "--session",
+            "session-1",
+            "--status",
+            "running",
+        )
         for index in range(5):
             self.run_cli(
                 "question",
@@ -365,6 +578,45 @@ class ResearchQueueCLITest(unittest.TestCase):
             "phase", self.state, "--set", "confirmed_project", ok=False
         )
         self.assertIn("PAUSED_FOR_PI", result.stderr)
+        polling = self.run_cli(
+            "job-update",
+            self.state,
+            "--id",
+            "J001",
+            "--next-poll",
+            "later",
+            ok=False,
+        )
+        self.assertIn("only record a safe terminal status", polling.stderr)
+        removal = self.run_cli(
+            "job-remove",
+            self.state,
+            "--id",
+            "J001",
+            "--force",
+            ok=False,
+        )
+        self.assertIn("safe terminal status first", removal.stderr)
+        child = self.root / "new-scope"
+        child.mkdir()
+        new_scope = self.run_cli(
+            "agents-audit",
+            self.state,
+            "--cwd",
+            child,
+            ok=False,
+        )
+        self.assertIn("PAUSED_FOR_PI", new_scope.stderr)
+        self.run_cli(
+            "job-update",
+            self.state,
+            "--id",
+            "J001",
+            "--status",
+            "completed",
+            "--result",
+            "atomic process reached a safe end",
+        )
         self.run_cli(
             "answer",
             self.state,
@@ -395,6 +647,84 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertEqual(status["pending_macro_count"], 4)
         self.assertEqual(status["deferred_pi_count"], 1)
 
+    def test_ambiguous_or_invalid_question_state_is_rejected(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "other",
+            "--target",
+            "other:q1",
+            "--text",
+            "question",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        original = json.loads(json.dumps(state))
+        state["macro_questions"].append(dict(state["macro_questions"][0]))
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        duplicate = self.run_cli("status", self.state, ok=False)
+        self.assertIn("non-empty and unique", duplicate.stderr)
+
+        original["macro_questions"][0]["status"] = "HIDDEN_FROM_PAUSE"
+        self.state.write_text(json.dumps(original), encoding="utf-8")
+        invalid = self.run_cli("status", self.state, ok=False)
+        self.assertIn("invalid status", invalid.stderr)
+
+    def test_empty_operator_records_are_rejected(self) -> None:
+        self.init_exploration()
+        empty_question = self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "other",
+            "--target",
+            "other:empty",
+            "--text",
+            "   ",
+            ok=False,
+        )
+        self.assertIn("non-empty --text", empty_question.stderr)
+        question = self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "other",
+            "--target",
+            "other:answer",
+            "--text",
+            "answer me",
+        )
+        question_id = json.loads(question.stdout)["added"]["id"]
+        empty_answer = self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            question_id,
+            "--decision",
+            " ",
+            "--outcome",
+            "reject",
+            ok=False,
+        )
+        self.assertIn("non-empty --decision", empty_answer.stderr)
+        empty_notice = self.run_cli(
+            "notify", self.state, "--text", " ", ok=False
+        )
+        self.assertIn("non-empty --text", empty_notice.stderr)
+        empty_job = self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            " ",
+            "--description",
+            "job",
+            "--command",
+            "run",
+            ok=False,
+        )
+        self.assertIn("non-empty --id", empty_job.stderr)
+
     def test_missing_l2_record_blocks_paper_ready_transition(self) -> None:
         self.init_exploration()
         self.confirm_direction(
@@ -406,6 +736,19 @@ class ResearchQueueCLITest(unittest.TestCase):
         assessment.write_text("# Paper ready\n", encoding="utf-8")
         result = self.enter_paper_ready(assessment, ok=False)
         self.assertIn("complete L1 and L2", result.stderr)
+
+    def test_phase_rejects_irrelevant_assessment_fields(self) -> None:
+        self.init_exploration()
+        result = self.run_cli(
+            "phase",
+            self.state,
+            "--set",
+            "confirmed_project",
+            "--assessment",
+            self.l1,
+            ok=False,
+        )
+        self.assertIn("used only when entering paper_ready_pending_pi", result.stderr)
 
     def test_legacy_v3_state_is_flagged_for_reconfirmation(self) -> None:
         self.state.parent.mkdir(parents=True)
@@ -480,7 +823,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
         summary = json.loads(self.run_cli("status", self.state).stdout)
-        self.assertEqual(summary["schema_version"], 7)
+        self.assertEqual(summary["schema_version"], 9)
         self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
         self.assertEqual(
             summary["instruction_maintenance"]["recent_updates"], []
@@ -509,6 +852,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "new task",
             "--dataset",
             "new data",
+            "--unexposed-dataset-search",
+            "new-data-2 is an unexposed candidate",
             "--competitive-bar",
             "new bar",
             "--novelty-sufficiency",
@@ -523,6 +868,48 @@ class ResearchQueueCLITest(unittest.TestCase):
             summary["layer_checkpoints"]["science"]["status"].startswith("STALE_AFTER")
         )
         self.assertEqual(summary["phase"], "confirmed_project")
+        stale_science = self.managed_text(self.l2, "SCIENCE_CURRENT")
+        self.assertIn("STALE_AFTER_DIRECTION_CHANGE", stale_science)
+        self.assertIn("Invalidated by: `D002`", stale_science)
+
+    def test_compass_change_marks_l1_and_l2_current_blocks_stale(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "compass",
+            "--id",
+            "C002",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Change the target venue and domain",
+            "--pi-outcome",
+            "select",
+            "--venue-or-window",
+            "KDD",
+            "--domain",
+            "recommendation",
+        )
+        stale_direction = self.managed_text(
+            self.l1, "DIRECTION_DECISION_CURRENT"
+        )
+        stale_standard = self.managed_text(
+            self.l1, "DIRECTION_STANDARD_CURRENT"
+        )
+        stale_science = self.managed_text(self.l2, "SCIENCE_CURRENT")
+        self.assertIn("STALE_AFTER_COMPASS_CHANGE", stale_direction)
+        self.assertIn("Invalidated by: `C002`", stale_direction)
+        self.assertIn("STALE_AFTER_COMPASS_CHANGE", stale_standard)
+        self.assertNotIn("beat the strongest matched baseline", stale_standard)
+        self.assertIn("STALE_AFTER_COMPASS_CHANGE", stale_science)
+        self.assertIn("Invalidated by: `C002`", stale_science)
 
     def test_scoped_approval_cannot_be_reused_for_another_checkpoint(self) -> None:
         self.init_exploration()
@@ -593,6 +980,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "task",
             "--dataset",
             "data",
+            "--unexposed-dataset-search",
+            "searched registry; candidate data-2 found",
             "--competitive-bar",
             "bar",
             "--novelty-sufficiency",
@@ -665,6 +1054,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "sequential recommendation",
             "--dataset",
             "Dataset-C",
+            "--unexposed-dataset-search",
+            "Dataset-D found as an unexposed candidate",
             "--competitive-bar",
             "new-bar",
             "--novelty-sufficiency",
@@ -682,6 +1073,11 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertNotIn("beat the strongest matched baseline", standard)
 
         l2_d2 = self.root / ".codex" / "research" / "L2" / "D002.md"
+        initial_l2 = l2_d2.read_text(encoding="utf-8")
+        self.assertIn("L1 evidence standard: competitive=new-bar", initial_l2)
+        initial_update = next(
+            line for line in initial_l2.splitlines() if line.startswith("Last material update:")
+        )
         for science_id, problem in (("S001", "old problem"), ("S002", "new problem")):
             self.run_cli(
                 "confirm",
@@ -719,6 +1115,165 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("S002", science)
         self.assertIn("new problem", science)
         self.assertNotIn("old problem", science)
+        self.assertEqual(science.count("Last material update:"), 1)
+        self.assertNotIn(initial_update, science)
+
+    def test_existing_legacy_l2_gets_one_current_l1_context_block(self) -> None:
+        self.init_exploration()
+        self.l2.write_text(
+            "# D001 scientific story\n\n"
+            "Direction ID: `D001`  \n"
+            "L1 task and dataset: old task | old data  \n"
+            "L1 evidence standard: competitive=old bar  \n"
+            "L1 confirmation source: old receipt\n"
+            "L2 status: `MAPPING_NEAREST_WORK`  \n"
+            "Last material update: old\n\n"
+            "## Problem-to-method chain\n\nKeep this scientific note.\n",
+            encoding="utf-8",
+        )
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        upgraded = self.l2.read_text(encoding="utf-8")
+        self.assertEqual(upgraded.count("<!-- RPW:L1_CONTEXT:START -->"), 1)
+        self.assertEqual(upgraded.count("<!-- RPW:L1_CONTEXT:END -->"), 1)
+        self.assertIn("Dataset-C found as an unexposed transfer candidate", upgraded)
+        self.assertIn("competitive=beat the strongest matched baseline", upgraded)
+        self.assertNotIn("old bar", upgraded)
+        self.assertIn("Keep this scientific note.", upgraded)
+
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "direction",
+            "--id",
+            "D001",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Keep D001 with a stronger evidence standard",
+            "--pi-outcome",
+            "select",
+            "--task-type",
+            "cross-site classification",
+            "--dataset",
+            "Dataset-A+Dataset-B",
+            "--unexposed-dataset-search",
+            "Dataset-E is now the preferred unexposed candidate",
+            "--competitive-bar",
+            "beat the strongest fully matched baseline",
+            "--novelty-sufficiency",
+            "a distinct problem-linked mechanism",
+            "--generalization-requirement",
+            "second dataset required",
+            "--paper-ready-threshold",
+            "stable gain and matched external comparison",
+        )
+        replaced = self.l2.read_text(encoding="utf-8")
+        self.assertEqual(replaced.count("<!-- RPW:L1_CONTEXT:START -->"), 1)
+        self.assertIn("Dataset-E is now the preferred unexposed candidate", replaced)
+        self.assertNotIn("Dataset-C found as an unexposed transfer candidate", replaced)
+        self.assertNotIn("competitive=beat the strongest matched baseline |", replaced)
+        self.assertIn("Keep this scientific note.", replaced)
+
+    def test_direction_confirmation_requires_unexposed_dataset_search(self) -> None:
+        self.init_exploration()
+        result = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "direction",
+            "--id",
+            "D001",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Choose D001",
+            "--pi-outcome",
+            "select",
+            "--task-type",
+            "task",
+            "--dataset",
+            "data",
+            "--competitive-bar",
+            "bar",
+            "--novelty-sufficiency",
+            "novel",
+            "--generalization-requirement",
+            "none",
+            "--paper-ready-threshold",
+            "threshold",
+            ok=False,
+        )
+        self.assertIn("unexposed_dataset_search", result.stderr)
+
+    def test_compass_replacement_preserves_concept_until_explicitly_cleared(self) -> None:
+        self.run_cli(
+            "init",
+            self.state,
+            "--project",
+            "demo",
+            "--phase",
+            "exploration",
+            "--venue-or-window",
+            "KDD",
+            "--domain",
+            "recommendation",
+            "--starting-concept",
+            "debias exposure",
+            "--pi-decision",
+            "Use this compass",
+            "--pi-outcome",
+            "select",
+        )
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "compass",
+            "--id",
+            "C002",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Change only the venue window",
+            "--pi-outcome",
+            "approve",
+            "--venue-or-window",
+            "WWW",
+            "--domain",
+            "recommendation",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["layer_checkpoints"]["compass"]["payload"]["starting_concept"],
+            "debias exposure",
+        )
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "compass",
+            "--id",
+            "C003",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Clear the optional seed",
+            "--pi-outcome",
+            "approve",
+            "--venue-or-window",
+            "WWW",
+            "--domain",
+            "recommendation",
+            "--clear-starting-concept",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["layer_checkpoints"]["compass"]["payload"]["starting_concept"],
+            "UNSET",
+        )
 
     def test_checkpoint_history_does_not_duplicate_stale_science(self) -> None:
         self.init_exploration()
@@ -741,6 +1296,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "new task",
             "--dataset",
             "new data",
+            "--unexposed-dataset-search",
+            "new-data-2 is an unexposed candidate",
             "--competitive-bar",
             "new bar",
             "--novelty-sufficiency",
@@ -860,6 +1417,20 @@ class ResearchQueueCLITest(unittest.TestCase):
             ok=False,
         )
         self.assertIn("cannot be duplicated", result.stderr)
+        unexposed = self.run_cli(
+            "freeze",
+            self.state,
+            "--key",
+            "unexposed_dataset_search",
+            "--value",
+            "candidate data",
+            "--pi-decision",
+            "Freeze the search result",
+            "--pi-outcome",
+            "approve",
+            ok=False,
+        )
+        self.assertIn("cannot be duplicated", unexposed.stderr)
 
         state = json.loads(self.state.read_text(encoding="utf-8"))
         state["frozen_by_pi"]["domain"] = {
@@ -897,6 +1468,113 @@ class ResearchQueueCLITest(unittest.TestCase):
             ok=False,
         )
         self.assertIn("missing structured fields", result.stderr)
+        self.assertIn("specific_method", result.stderr)
+        self.assertIn("final_results", result.stderr)
+        self.assertIn("recent_top_conference_baseline", result.stderr)
+        self.assertIn("baseline_venue_year", result.stderr)
+        self.assertIn("baseline_search_scope", result.stderr)
+        self.assertIn("baseline_score", result.stderr)
+
+    def test_direction_cannot_lower_one_point_paper_floor(self) -> None:
+        self.init_exploration()
+        question = self.add_answer("direction", "Choose D001?", outcome="select")
+        result = self.confirm_direction(question, minimum_gain=0.5, ok=False)
+        self.assertIn("cannot lower the 1-point floor", result.stderr)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["layer_checkpoints"]["direction"]["status"], "UNSET")
+
+    def test_exact_one_point_gain_creates_complete_decision_report(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-gain.md"
+        original = "# Candidate paper\n"
+        assessment.write_text(original, encoding="utf-8")
+
+        blocked = self.enter_paper_ready(
+            assessment, ok=False, baseline_score=0.80, our_score=0.809
+        )
+        self.assertIn("below the configured 1-point floor", blocked.stderr)
+        self.assertEqual(assessment.read_text(encoding="utf-8"), original)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["phase"], "confirmed_project")
+        self.assertIsNone(state["paper_ready_assessment"])
+
+        self.enter_paper_ready(assessment, baseline_score=0.80, our_score=0.81)
+        report = assessment.read_text(encoding="utf-8")
+        for expected in (
+            "## Paper-decision report",
+            "Current task: cross-site classification",
+            "Dataset: Dataset-A+Dataset-B",
+            "Problem in current work: site-specific shortcuts",
+            "Innovation: remove shortcut information without target labels",
+            "Concrete method: residual removal with a source-identifiability penalty",
+            "Final results: 0.81 versus 0.8 on the primary matched evaluation",
+            "Strongest recent top-conference protocol-matched baseline:",
+            "Baseline venue/year: SIGIR 2025",
+            "Baseline search scope: SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28",
+            "Protocol-match evidence: same dataset, split, labels, metric, and evaluation procedure",
+            "Improvement (percentage points): 1",
+            "Required improvement (percentage points): 1",
+        ):
+            self.assertIn(expected, report)
+        stored = json.loads(self.state.read_text(encoding="utf-8"))[
+            "paper_ready_assessment"
+        ]
+        self.assertEqual(stored["improvement_points"], 1.0)
+        self.assertEqual(stored["minimum_paper_gain_points"], 1.0)
+
+    def test_percentage_scale_and_stricter_project_floor(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select"),
+            minimum_gain=1.5,
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-strict.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+
+        blocked = self.enter_paper_ready(
+            assessment,
+            ok=False,
+            metric_scale="percentage",
+            baseline_score=80.0,
+            our_score=81.0,
+        )
+        self.assertIn("below the configured 1.5-point floor", blocked.stderr)
+        self.enter_paper_ready(
+            assessment,
+            metric_scale="percentage",
+            baseline_score=80.0,
+            our_score=81.5,
+        )
+        stored = json.loads(self.state.read_text(encoding="utf-8"))[
+            "paper_ready_assessment"
+        ]
+        self.assertEqual(stored["improvement_points"], 1.5)
+        self.assertEqual(stored["minimum_paper_gain_points"], 1.5)
+
+    def test_schema_v8_direction_without_numeric_gain_floor_needs_audit(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 8
+        del state["layer_checkpoints"]["direction"]["payload"]["evidence_standard"][
+            "minimum_paper_gain_points"
+        ]
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        self.run_cli("notify", self.state, "--text", "save schema migration")
+        migrated = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(
+            migrated["layer_checkpoints"]["direction"]["status"],
+            "LEGACY_CONFIRMED_NEEDS_AUDIT",
+        )
 
     def test_recent_notifications_are_bounded(self) -> None:
         self.init_exploration()
@@ -905,6 +1583,10 @@ class ResearchQueueCLITest(unittest.TestCase):
         summary = json.loads(self.run_cli("status", self.state).stdout)
         self.assertEqual(summary["notification_count"], 50)
         self.assertEqual(summary["notification_compacted_count"], 5)
+        self.assertEqual(
+            [item["text"] for item in summary["recent_notifications"]],
+            [f"notice-{index}" for index in range(50, 55)],
+        )
 
     def test_active_job_is_resumable_and_removable(self) -> None:
         self.init_exploration()
@@ -961,6 +1643,46 @@ class ResearchQueueCLITest(unittest.TestCase):
             for audit in stored["instruction_maintenance"]["audits_by_scope"].values()
         }
         self.assertEqual(scopes, {".", "src/service"})
+
+    def test_agents_audit_skips_empty_override_like_codex(self) -> None:
+        override = self.root / "AGENTS.override.md"
+        agents = self.root / "AGENTS.md"
+        override.write_bytes(b"")
+        agents.write_text("effective root rules\n", encoding="utf-8")
+        result = self.run_cli("init", self.state, "--project", "demo")
+        summary = json.loads(result.stdout)
+        scope = summary["instruction_maintenance"]["audit_scopes"][0]
+        self.assertEqual(scope["effective_paths"], ["AGENTS.md"])
+
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        audit = next(
+            iter(stored["instruction_maintenance"]["audits_by_scope"].values())
+        )
+        self.assertEqual(audit["ignored_empty_files"], ["AGENTS.override.md"])
+        observed = {item["path"]: item for item in audit["observed_files"]}
+        self.assertEqual(observed["AGENTS.override.md"]["ignored_reason"], "empty")
+        self.assertTrue(observed["AGENTS.md"]["selected"])
+        duplicate = self.run_cli(
+            "agents-audit",
+            self.state,
+            "--fallback-name",
+            "TEAM_GUIDE.md",
+            "--fallback-name",
+            "TEAM_GUIDE.md",
+            ok=False,
+        )
+        self.assertIn("must be unique", duplicate.stderr)
+        standard_collision = self.run_cli(
+            "agents-audit",
+            self.state,
+            "--fallback-name",
+            "agents.md",
+            ok=False,
+        )
+        self.assertIn(
+            "Invalid project instruction fallback filename",
+            standard_collision.stderr,
+        )
 
     def test_unrecorded_agents_change_is_a_control_issue(self) -> None:
         agents = self.root / "AGENTS.md"
@@ -1102,6 +1824,36 @@ class ResearchQueueCLITest(unittest.TestCase):
         )
         self.run_cli("audit", self.state)
 
+    def test_status_summarizes_instruction_scopes_without_snapshot_dump(self) -> None:
+        (self.root / "AGENTS.md").write_text("root\n", encoding="utf-8")
+        nested = self.root / "src"
+        nested.mkdir()
+        (nested / "AGENTS.md").write_text("src\n", encoding="utf-8")
+        self.run_cli("init", self.state, "--project", "demo")
+        self.run_cli("agents-audit", self.state, "--cwd", nested)
+
+        summary = json.loads(self.run_cli("status", self.state).stdout)
+        maintenance = summary["instruction_maintenance"]
+        self.assertEqual(maintenance["audit_scope_count"], 2)
+        self.assertEqual(
+            [scope["scope_cwd"] for scope in maintenance["audit_scopes"]],
+            [".", "src"],
+        )
+        self.assertEqual(
+            maintenance["audit_scopes"][1]["removal_target"],
+            'instructions-scope:{"cwd":"src","fallback":[]}',
+        )
+        self.assertTrue(
+            all("observed_files" not in scope for scope in maintenance["audit_scopes"])
+        )
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertTrue(
+            all(
+                "observed_files" in audit
+                for audit in stored["instruction_maintenance"]["audits_by_scope"].values()
+            )
+        )
+
     def test_instruction_file_deletion_can_be_recorded(self) -> None:
         agents = self.root / "AGENTS.md"
         agents.write_text("obsolete scoped rules\n", encoding="utf-8")
@@ -1123,6 +1875,106 @@ class ResearchQueueCLITest(unittest.TestCase):
         receipt = json.loads(result.stdout)["recorded"]
         self.assertTrue(receipt["after_absent"])
         self.assertIsNone(receipt["after_sha256"])
+        self.run_cli("audit", self.state)
+
+    def test_missing_instruction_scope_can_be_pruned_autonomously(self) -> None:
+        (self.root / "AGENTS.md").write_text("root\n", encoding="utf-8")
+        nested = self.root / "obsolete"
+        nested.mkdir()
+        nested_agents = nested / "AGENTS.md"
+        nested_agents.write_text("obsolete rules\n", encoding="utf-8")
+        self.run_cli("init", self.state, "--project", "demo")
+        self.run_cli("agents-audit", self.state, "--cwd", nested)
+        nested_agents.unlink()
+        nested.rmdir()
+
+        before = self.run_cli("audit", self.state, ok=False)
+        codes = {
+            issue["code"]
+            for issue in json.loads(before.stdout)["control_issues"]
+        }
+        self.assertIn("PROJECT_INSTRUCTION_AUDIT_SCOPE_INVALID", codes)
+        removed = self.run_cli(
+            "agents-scope-remove",
+            self.state,
+            "--cwd",
+            nested,
+            "--reason",
+            "Directory was removed",
+            "--summary",
+            "清理已经不存在目录的说明审计范围。",
+        )
+        receipt = json.loads(removed.stdout)["removed_scope"]
+        self.assertFalse(receipt["scope_existed_at_removal"])
+        self.assertEqual(
+            receipt["decision_source"]["type"],
+            "autonomous_missing_scope_prune",
+        )
+        self.run_cli("audit", self.state)
+
+    def test_existing_instruction_scope_removal_requires_scoped_pi_approval(self) -> None:
+        (self.root / "AGENTS.md").write_text("root\n", encoding="utf-8")
+        nested = self.root / "src"
+        nested.mkdir()
+        (nested / "AGENTS.md").write_text("src rules\n", encoding="utf-8")
+        self.run_cli("init", self.state, "--project", "demo")
+        self.run_cli("agents-audit", self.state, "--cwd", nested)
+
+        denied = self.run_cli(
+            "agents-scope-remove",
+            self.state,
+            "--cwd",
+            nested,
+            "--reason",
+            "Stop auditing src",
+            "--summary",
+            "停止审计 src 目录。",
+            ok=False,
+        )
+        self.assertIn("requires --decision-id", denied.stderr)
+        added = self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "instructions",
+            "--target",
+            'instructions-scope:{"cwd":"src","fallback":[]}',
+            "--text",
+            "Stop auditing src?",
+        )
+        question_id = json.loads(added.stdout)["added"]["id"]
+        self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            question_id,
+            "--decision",
+            "Approve removing this audit scope",
+            "--outcome",
+            "approve",
+        )
+        removed = self.run_cli(
+            "agents-scope-remove",
+            self.state,
+            "--cwd",
+            nested,
+            "--reason",
+            "Stop auditing src",
+            "--summary",
+            "按确认决定停止审计 src 目录。",
+            "--decision-id",
+            question_id,
+        )
+        receipt = json.loads(removed.stdout)["removed_scope"]
+        self.assertTrue(receipt["scope_existed_at_removal"])
+        self.assertEqual(
+            receipt["decision_source"]["question_id"], question_id
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        question = next(q for q in state["macro_questions"] if q["id"] == question_id)
+        self.assertEqual(
+            question["consumed_by"]["type"], "instruction_scope_remove"
+        )
         self.run_cli("audit", self.state)
 
     def test_semantic_agents_update_consumes_scoped_pi_decision(self) -> None:
@@ -1199,6 +2051,26 @@ class ResearchQueueCLITest(unittest.TestCase):
         codes = {issue["code"] for issue in audit["issues"]}
         self.assertIn("PROJECT_INSTRUCTION_CHAIN_DEFAULT_LIMIT_EXCEEDED", codes)
 
+    def test_direction_checkpoint_id_cannot_escape_l2_directory(self) -> None:
+        self.init_exploration()
+        result = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "direction",
+            "--id",
+            "../escape",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Choose an invalid direction ID",
+            "--pi-outcome",
+            "select",
+            ok=False,
+        )
+        self.assertIn("cannot contain a path", result.stderr)
+        self.assertFalse((self.root / ".codex" / "research" / "escape.md").exists())
+
     def test_checkpoint_record_outside_project_is_rejected(self) -> None:
         self.init_exploration()
         question = self.add_answer("direction", "Choose D001?", outcome="select")
@@ -1220,6 +2092,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "task",
                 "--dataset",
                 "data",
+                "--unexposed-dataset-search",
+                "searched registry; candidate data-2 found",
                 "--competitive-bar",
                 "bar",
                 "--novelty-sufficiency",
@@ -1272,6 +2146,20 @@ class ResearchQueueCLITest(unittest.TestCase):
                 evidence,
             )
             self.assertEqual(evidence.read_text(encoding="utf-8"), original)
+            self.run_cli("audit", self.state)
+            evidence.write_text(original + "changed result\n", encoding="utf-8")
+            changed = self.run_cli("audit", self.state, ok=False)
+            codes = {
+                issue["code"]
+                for issue in json.loads(changed.stdout)["control_issues"]
+            }
+            self.assertIn("SCIENCE_EVIDENCE_RECORD_CHANGED", codes)
+            assessment = self.root / "paper-ready-after-drift.md"
+            assessment.write_text("# assessment\n", encoding="utf-8")
+            blocked = self.enter_paper_ready(assessment, ok=False)
+            self.assertIn("complete L1 and L2", blocked.stderr)
+            evidence.write_text(original, encoding="utf-8")
+            self.run_cli("audit", self.state)
         state = json.loads(self.state.read_text(encoding="utf-8"))
         ref = state["layer_checkpoints"]["science"]["payload"]["evidence_refs"]["results"]
         self.assertTrue(Path(ref["path"]).is_absolute())
@@ -1296,7 +2184,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("notify", self.state, "--text", "save migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
         questions = {q["id"]: q for q in migrated["macro_questions"]}
-        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["schema_version"], 9)
         self.assertEqual(questions[first]["superseded_by"], second)
         self.assertEqual(
             migrated["decision_target_revisions"]["direction:D001"], 2
@@ -1304,6 +2192,46 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertEqual(
             len(migrated["instruction_maintenance"]["audits_by_scope"]), 1
         )
+
+    def test_schema_v7_adds_bounded_scope_removal_history(self) -> None:
+        self.init_exploration()
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 7
+        state["instruction_maintenance"].pop("recent_scope_removals")
+        state["instruction_maintenance"].pop("compacted_scope_removal_count")
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        self.run_cli("notify", self.state, "--text", "save schema migration")
+        migrated = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(
+            migrated["instruction_maintenance"]["recent_scope_removals"], []
+        )
+        self.assertEqual(
+            migrated["instruction_maintenance"]["compacted_scope_removal_count"],
+            0,
+        )
+
+    def test_schema_v7_direction_requires_unexposed_dataset_search_audit(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 7
+        del state["layer_checkpoints"]["direction"]["payload"][
+            "unexposed_dataset_search"
+        ]
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        result = self.run_cli("audit", self.state, ok=False)
+        summary = json.loads(result.stdout)
+        self.assertEqual(
+            summary["layer_checkpoints"]["direction"]["status"],
+            "LEGACY_CONFIRMED_NEEDS_AUDIT",
+        )
+        codes = {issue["code"] for issue in summary["control_issues"]}
+        self.assertIn("LEGACY_DIRECTION_NEEDS_RECONFIRMATION", codes)
 
 
 if __name__ == "__main__":

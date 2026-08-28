@@ -14,24 +14,27 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 - requires the user to confirm the L1 direction and project evidence standard, then later promote the L2 problem, core mechanism, and innovation claim;
 - binds each queued approval to one decision target, supersedes it when a newer decision for that target exists, and consumes it once;
 - keeps informational replies active, while deferred decisions move to a visible queue with a required revisit condition and do not count toward the five-question pause;
-- requires a dataset-origin reference, a recent strong comparable method, another published mechanism, and a strong simple baseline before paper-level claims;
+- requires a dataset-origin reference, a recent top-conference comparable method, another published mechanism, and a strong simple baseline before paper-level claims;
 - separates external baselines, the proposed method, and internal variants instead of treating “ours versus ours” as competitiveness evidence;
+- permits a paper-decision question only after the higher-is-better primary metric beats the strongest recent top-conference protocol-matched baseline by at least 1 percentage point (`0.01` on a `0–1` scale or `1.0` on a `0–100` scale), then generates a complete decision report before asking the user;
 - avoids engineering-heavy module stacks without a coherent mechanism;
 - uses existing GPU compute by default and never rents paid compute without approval;
 - tunes only candidates with credible potential and reports their observed ceiling plainly;
 - does not require an archive of every attempt, failed trial, tuning trace, or stopping rule;
 - keeps L1/L2 scientific state and decisions durably while letting the agent decide how much L3 detail remains useful;
-- does not require a second, new, or previously unexposed dataset unless the user or project adopts that evidence standard;
+- always searches for a credible dataset not previously exposed in the project, while leaving its adoption as a second-dataset or generalization requirement to the user;
 - continues independent work while PI questions are unanswered;
+- answers in-progress “what are you doing?” questions with a read-only compass→L1→L2→prediction drift trace instead of treating discussion as approval;
 - pauses when five genuine PI decisions are pending;
-- rejects phase advancement and new active-job registration while paused;
+- rejects phase advancement, new instruction-maintenance mutations, new active jobs, and continued polling or advancement of existing jobs while paused; only safe terminal job updates remain allowed;
+- content-locks both the paper-ready report file and its structured payload between the gate and the user's paper decision, then reports later drift instead of silently accepting changed evidence;
 - keeps compass/L1/L2/paper fields as single sources of truth, protects additional frozen choices from silent replacement, and preserves material L1/L2 decision history;
 - keeps `AGENTS.md` as a bounded stable contract and router, retains separate compare-only snapshots for audited scopes, and records instruction changes without copying dynamic research state into it;
 - routes semantic instruction changes through the same scoped five-question PI queue while treating verified path repairs and meaning-preserving compaction as notifications;
 - audits legacy state instead of silently treating older unstructured approvals as complete;
 - hands a user-approved research package to a separate submission workflow instead of mixing exploration with drafting and review.
 
-The skill intentionally does not impose universal test-set, sealed-set, external-label, metric, validation, second-dataset, or unexposed-dataset protocols. Those remain project-specific.
+The skill intentionally does not impose universal test-set, sealed-set, external-label, metric-selection, validation, or second-dataset protocols. It does impose the paper-decision gain floor above once a higher-is-better primary metric and matched protocol are selected. It also requires an unexposed-dataset search during L1 scouting; the user decides whether any candidate becomes part of the evidence standard.
 
 ## Install
 
@@ -68,7 +71,7 @@ For long-running work, the skill can maintain:
 <project>/.codex/research/L3/D001.md  # optional agent/project-managed index
 ```
 
-The schema-v7 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, legal phases, structured paper-ready assessment, recent notifications, resumable active jobs, pause state, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. L2 confirmation also records resolvable nearest-work, external-baseline, and result references. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
+The schema-v9 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, legal phases, structured paper-ready assessment and gain arithmetic, recent notifications, resumable active jobs, pause state, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. It can prune audit scopes for deleted directories while requiring PI approval to remove coverage from a directory that still exists. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. Compass or direction changes also mark invalidated L1/L2 current-state blocks visibly stale. L2 confirmation records the L1 evidence standard plus resolvable nearest-work, external-baseline, and result references. The paper gate generates and content-locks a readable decision report before the user's paper decision. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
 
 Existing projects may retain `.codex/research-ledger.md` as read-only history and create the layered files at the next material checkpoint.
 
@@ -86,19 +89,24 @@ The content layers and execution phases are intentionally separate: L1/L2/L3 say
 
 ## Queue helper
 
+The commands below assume the repository root. When the skill is installed and
+the active working directory is a research project, resolve the controller as
+`scripts/research_queue.py` relative to the installed `SKILL.md`.
+
 ```powershell
 python scripts/research_queue.py init STATE --project NAME
 python scripts/research_queue.py init STATE --project NAME --phase exploration --venue-or-window "ICASSP" --domain "sMRI" --pi-decision "用户确认投稿目标和领域" --pi-outcome select
 python scripts/research_queue.py audit STATE
 python scripts/research_queue.py agents-audit STATE --cwd PROJECT_SUBDIRECTORY
+python scripts/research_queue.py agents-scope-remove STATE --cwd RETIRED_DIRECTORY --reason "Directory was removed" --summary "清理已经不存在目录的说明审计范围。"
 python scripts/research_queue.py agents-record STATE --path AGENTS.md --kind compaction --reason "Moved dynamic detail to L1/L2" --summary "删去项目说明中的动态研究记录，只保留稳定规则和来源链接。" --canonical-source .codex/research/L2/D001.md
 python scripts/research_queue.py question STATE --layer direction --target direction:D001 --priority high --text "..." --reason "..." --recommendation "..." --continue-plan "..."
 python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
 python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"
 python scripts/research_queue.py reopen STATE --id Q002 --reason "外部 baseline 复现已完成"
-python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..."
+python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --unexposed-dataset-search "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..." --minimum-paper-gain-points 1
 python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
-python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..."
+python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --recent-top-conference-baseline "..." --baseline-venue-year "SIGIR 2025" --baseline-search-scope "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28" --baseline-source "..." --protocol-match-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
 python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
 python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-action "..."
 python scripts/research_queue.py status STATE
