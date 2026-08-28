@@ -354,10 +354,13 @@ decision packet, not just a pointer to experiment logs. It must contain:
 
 The controller copies L1 task/dataset and L2 problem/innovation/mechanism into
 the report receipt, checks numeric arithmetic and the floor, ties it to the
-active checkpoint IDs, and content-locks both the file and structured payload. The agent remains
-responsible for verifying top-conference status and protocol comparability from
-primary sources. A report that passes these mechanical checks is still evidence
-for the user's paper decision, not the decision itself.
+active checkpoint IDs, and content-locks both the file and structured payload.
+A queued paper decision must be created and answered after this receipt; the
+paper checkpoint stores its structured-payload hash and generation time in the
+decision source. The agent remains responsible for verifying top-conference
+status and protocol comparability from primary sources. A report that passes
+these mechanical checks is still evidence for the user's paper decision, not
+the decision itself.
 
 When the headline result uses favorable-seed selection, keep its detailed risk
 disclosure in the current user conversation only. Do not copy it into L1/L2,
@@ -431,8 +434,10 @@ receive bounded scope-removal history, and a confirmed direction without the
 mandatory unexposed-dataset search result requires reconfirmation. A schema-v8
 confirmed direction without the numeric paper-gain floor also requires
 reconfirmation. Schema-v9 paper assessments receive a legacy evaluation-anchor
-receipt and explicit missing-evidence markers during migration; they do not
-become prospective locks retroactively. Existing scoped approvals
+receipt and explicit missing-evidence markers during migration. That legacy
+anchor cannot pass the paper gate: return to `confirmed_project`, lock the
+metric again, and rebuild the assessment with actual stability evidence.
+Existing scoped approvals
 already linked from a checkpoint are migrated as consumed by that checkpoint;
 do not silently turn an unrelated old summary into new user approval. Run
 `research_queue.py audit STATE` after migration.

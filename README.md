@@ -28,7 +28,7 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 - answers in-progress “what are you doing?” questions with a read-only compass→L1→L2→prediction drift trace instead of treating discussion as approval;
 - pauses when five genuine PI decisions are pending;
 - rejects phase advancement, new instruction-maintenance mutations, new active jobs, and continued polling or advancement of existing jobs while paused; only safe terminal job updates remain allowed;
-- content-locks both the paper-ready report file and its structured payload between the gate and the user's paper decision, then reports later drift instead of silently accepting changed evidence;
+- content-locks both the paper-ready report file and its structured payload, requires the paper question to be created and answered after that report, and binds the approval to the current report receipt;
 - keeps compass/L1/L2/paper fields as single sources of truth, protects additional frozen choices from silent replacement, and preserves material L1/L2 decision history;
 - keeps `AGENTS.md` as a bounded stable contract and router, retains separate compare-only snapshots for audited scopes, and records instruction changes without copying dynamic research state into it;
 - routes semantic instruction changes through the same scoped five-question PI queue while treating verified path repairs and meaning-preserving compaction as notifications;

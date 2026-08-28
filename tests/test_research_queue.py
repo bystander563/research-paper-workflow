@@ -479,6 +479,79 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("Confirmed paper checkpoint", assessment.read_text(encoding="utf-8"))
         stored = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertIn("sha256_after_handoff", stored["paper_ready_assessment"])
+        paper_source = stored["layer_checkpoints"]["paper"]["decision_source"]
+        self.assertEqual(
+            paper_source["paper_assessment_payload_sha256"],
+            stored["paper_ready_assessment"]["payload_sha256_at_gate"],
+        )
+        self.assertEqual(
+            paper_source["paper_assessment_recorded_at"],
+            stored["paper_ready_assessment"]["recorded_at"],
+        )
+        self.run_cli("audit", self.state)
+        paper_source["paper_assessment_payload_sha256"] = "tampered-binding"
+        self.state.write_text(json.dumps(stored), encoding="utf-8")
+        audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
+        self.assertIn(
+            "PAPER_DECISION_ASSESSMENT_NOT_BOUND",
+            {issue["code"] for issue in audit["control_issues"]},
+        )
+
+    def test_pre_report_paper_approval_cannot_authorize_current_report(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        stale_paper_q = self.add_answer(
+            "paper", "Enter writing before a report exists?", outcome="approve"
+        )
+        assessment = self.root / "paper-ready-after-old-approval.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+
+        blocked = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "paper",
+            "--id",
+            "P001",
+            "--record",
+            assessment,
+            "--decision-id",
+            stale_paper_q,
+            "--science-id",
+            "S001",
+            "--headline-claim",
+            "A narrow supported claim",
+            "--handoff-target",
+            "paper-submission-orchestrator",
+            ok=False,
+        )
+        self.assertIn("created and answered after", blocked.stderr)
+
+        current_paper_q = self.add_answer(
+            "paper", "Enter writing for the current report?", outcome="approve"
+        )
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "paper",
+            "--id",
+            "P001",
+            "--record",
+            assessment,
+            "--decision-id",
+            current_paper_q,
+            "--science-id",
+            "S001",
+            "--headline-claim",
+            "A narrow supported claim",
+            "--handoff-target",
+            "paper-submission-orchestrator",
+        )
         self.run_cli("audit", self.state)
 
     def test_paper_gate_requires_pre_tuning_metric_anchor(self) -> None:
@@ -1797,9 +1870,20 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertTrue(migrated["evaluation_anchor"]["legacy_derived"])
         self.assertEqual(migrated["evaluation_anchor"]["revision"], 1)
         migrated_assessment = migrated["paper_ready_assessment"]
-        self.assertIn("Legacy schema-v9", migrated_assessment["stability_evidence"])
+        self.assertIn("Legacy pre-v10", migrated_assessment["stability_evidence"])
         self.assertFalse(migrated_assessment["favorable_seed_selection"])
         self.assertIsNone(migrated["seed_selection_risk_acceptance"])
+        audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
+        codes = {issue["code"] for issue in audit["control_issues"]}
+        self.assertIn("EVALUATION_ANCHOR_LEGACY_RELOCK_REQUIRED", codes)
+
+        self.run_cli("phase", self.state, "--set", "confirmed_project")
+        self.set_evaluation_anchor()
+        relocked = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(relocked["evaluation_anchor"]["revision"], 2)
+        self.assertFalse(relocked["evaluation_anchor"]["legacy_derived"])
+        self.assertIsNone(relocked["paper_ready_assessment"])
+        self.run_cli("audit", self.state)
 
     def test_recent_notifications_are_bounded(self) -> None:
         self.init_exploration()

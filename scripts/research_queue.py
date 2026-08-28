@@ -246,6 +246,7 @@ def evaluation_anchor_usable(state: dict[str, Any]) -> bool:
     direction = state.get("layer_checkpoints", {}).get("direction", {})
     return bool(
         evaluation_anchor_complete(anchor)
+        and not anchor.get("legacy_derived")
         and direction.get("status") == "CONFIRMED_BY_PI"
         and anchor.get("direction_id") == direction.get("id")
     )
@@ -550,7 +551,7 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
                 "metric_direction": "higher_is_better",
                 "locked_at": locked_at,
                 "reason": (
-                    "Migrated from a schema-v9 paper assessment; prospective "
+                    "Migrated from a pre-v10 paper assessment; prospective "
                     "pre-tuning lock timing was not recorded"
                 ),
                 "legacy_derived": True,
@@ -561,11 +562,11 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
             assessment.setdefault("metric_direction", "higher_is_better")
             assessment.setdefault(
                 "evaluation_anchor_evidence",
-                "Legacy schema-v9 assessment imported without a prospective lock receipt",
+                "Legacy pre-v10 assessment imported without a prospective lock receipt",
             )
             assessment.setdefault(
                 "stability_evidence",
-                "Legacy schema-v9 assessment did not structurally capture stability evidence",
+                "Legacy pre-v10 assessment did not structurally capture stability evidence",
             )
             assessment.setdefault("favorable_seed_selection", False)
             assessment["payload_sha256_at_gate"] = paper_assessment_payload_sha256(
@@ -1286,6 +1287,19 @@ def age_minutes(timestamp: str) -> float | None:
     return max(0.0, (datetime.now(timezone.utc) - created).total_seconds() / 60.0)
 
 
+def timestamp_at_or_after(candidate: Any, boundary: Any) -> bool:
+    try:
+        candidate_time = datetime.fromisoformat(str(candidate))
+        boundary_time = datetime.fromisoformat(str(boundary))
+    except (TypeError, ValueError):
+        return False
+    if candidate_time.tzinfo is None:
+        candidate_time = candidate_time.replace(tzinfo=timezone.utc)
+    if boundary_time.tzinfo is None:
+        boundary_time = boundary_time.replace(tzinfo=timezone.utc)
+    return candidate_time >= boundary_time
+
+
 def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
     checkpoint = state["layer_checkpoints"].get(layer, {})
     if checkpoint.get("status") != "CONFIRMED_BY_PI":
@@ -1516,6 +1530,12 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             "P0",
             "The evaluation anchor must contain a direction, primary metric, scale, directionality, revision, reason, and lock time",
         )
+    elif anchor is not None and anchor.get("legacy_derived"):
+        add(
+            "EVALUATION_ANCHOR_LEGACY_RELOCK_REQUIRED",
+            "P0",
+            "A migrated pre-v10 paper assessment cannot prove that its metric was locked before broad tuning; return to confirmed_project and set the evaluation anchor again",
+        )
     elif anchor is not None and not evaluation_anchor_usable(state):
         add(
             "EVALUATION_ANCHOR_DIRECTION_MISMATCH",
@@ -1619,6 +1639,19 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "The approved paper-handoff record changed after confirmation",
             )
         source = checkpoint.get("decision_source") or {}
+        if layer == "paper" and checkpoint.get("status") == "CONFIRMED_BY_PI":
+            current_assessment = state.get("paper_ready_assessment") or {}
+            if (
+                source.get("paper_assessment_payload_sha256")
+                != current_assessment.get("payload_sha256_at_gate")
+                or source.get("paper_assessment_recorded_at")
+                != current_assessment.get("recorded_at")
+            ):
+                add(
+                    "PAPER_DECISION_ASSESSMENT_NOT_BOUND",
+                    "P0",
+                    "The paper decision is not bound to the current paper-decision report receipt",
+                )
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and source.get(
             "type"
         ) == "answered_question":
@@ -2913,6 +2946,16 @@ def cmd_compact_notifications(args: argparse.Namespace) -> None:
 def approving_decision_source(
     state: dict[str, Any], args: argparse.Namespace, layer: str
 ) -> dict[str, str]:
+    assessment_hash = None
+    assessment_recorded_at = None
+    if layer == "paper":
+        assessment = state.get("paper_ready_assessment") or {}
+        assessment_hash = str(assessment.get("payload_sha256_at_gate") or "").strip()
+        assessment_recorded_at = str(assessment.get("recorded_at") or "").strip()
+        if not assessment_hash or not assessment_recorded_at:
+            raise SystemExit(
+                "Paper approval requires a current paper-decision report receipt"
+            )
     if args.decision_id:
         expected_target = f"{layer}:{args.id}"
         question = current_answered_approval(
@@ -2923,22 +2966,39 @@ def approving_decision_source(
             "a checkpoint confirmation",
         )
         outcome = question.get("outcome")
-        return {
+        source = {
             "type": "answered_question",
             "question_id": args.decision_id,
             "decision": str(question["decision"]),
             "outcome": str(outcome),
         }
+        if layer == "paper":
+            if not timestamp_at_or_after(
+                question.get("created_at"), assessment_recorded_at
+            ) or not timestamp_at_or_after(
+                question.get("answered_at"), assessment_recorded_at
+            ):
+                raise SystemExit(
+                    "The paper decision question must be created and answered after "
+                    "the current paper-decision report is generated"
+                )
+            source["paper_assessment_payload_sha256"] = assessment_hash
+            source["paper_assessment_recorded_at"] = assessment_recorded_at
+        return source
     direct_decision = str(args.pi_decision or "").strip()
     if not direct_decision:
         raise SystemExit("--pi-decision must contain the user's actual decision")
     if args.pi_outcome not in APPROVING_OUTCOMES:
         raise SystemExit("Direct checkpoint confirmation requires --pi-outcome approve or select")
-    return {
+    source = {
         "type": "direct_pi_instruction",
         "decision": direct_decision,
         "outcome": args.pi_outcome,
     }
+    if layer == "paper":
+        source["paper_assessment_payload_sha256"] = assessment_hash
+        source["paper_assessment_recorded_at"] = assessment_recorded_at
+    return source
 
 
 def consume_question(
@@ -3235,8 +3295,10 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         "metric_scale": args.metric_scale,
         "metric_direction": args.metric_direction,
     }
-    if isinstance(current, dict) and all(
-        current.get(key) == value for key, value in identity.items()
+    if (
+        isinstance(current, dict)
+        and not current.get("legacy_derived")
+        and all(current.get(key) == value for key, value in identity.items())
     ):
         raise SystemExit("Evaluation anchor is already set to these values")
     revision = 1

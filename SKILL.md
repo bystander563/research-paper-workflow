@@ -173,7 +173,8 @@ supported claim, strongest remaining objection, and necessary versus optional
 work. Then ask whether to enter writing and which headline claim to use. Only a
 typed paper checkpoint may enter `paper_handoff_approved`. If the assessment
 changes after this gate, reassess it before seeking or consuming the paper
-decision.
+decision. A queued paper question must be created and answered after the current
+report; never reuse approval from an earlier or pre-report packet.
 
 If the proposed headline result selects `n` favorable seeds from a larger pool,
 show the user the total pool, selection rule, and scientific risk in the

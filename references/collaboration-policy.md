@@ -248,7 +248,9 @@ the project-local paper-decision report. Present:
 
 Only then ask the user whether to enter writing and which claim to use. While
 waiting, verify artifacts and organize evidence. Do not silently choose the
-final claim, title, or a new evidence standard.
+final claim, title, or a new evidence standard. Do not reuse a paper approval
+question created for an earlier or not-yet-generated report; the controller
+binds the approval to the current report receipt.
 
 ## Durable control state
 

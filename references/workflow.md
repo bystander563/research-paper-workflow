@@ -229,6 +229,11 @@ exists may the workflow enter `paper_ready_pending_pi` and ask whether to start
 paper writing and what headline claim to use. This is a real user decision even
 when the agent strongly recommends proceeding.
 
+A queued paper decision must be created and answered after the current report
+receipt is generated. The controller binds the consumed approval to that
+report's structured-payload hash and generation time, so an approval from an
+older or pre-report question cannot authorize a rebuilt packet.
+
 The transition into `paper_ready_pending_pi` requires that project-local durable
 report and a structured receipt covering its scientific and numeric fields. The
 controller checks completeness, arithmetic, the configured floor, provenance,

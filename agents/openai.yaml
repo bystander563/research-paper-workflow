@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Paper Workflow"
   short_description: "Track research gates, evidence links, and PI decisions"
-  default_prompt: "Use $research-paper-workflow to continue this project within confirmed L1/L2, check durable state before work, surface only genuine PI decisions, and require the matched-baseline paper report before writing."
+  default_prompt: "Use $research-paper-workflow to scout or continue this paper project, recover durable state, surface only genuine PI decisions, and require a current matched-baseline report before writing."
