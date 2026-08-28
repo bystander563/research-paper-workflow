@@ -11,7 +11,8 @@ The user makes these decisions:
 
 - confirm or change the research compass: venue/submission window and domain;
 - select or change the L1 task-dataset direction and project evidence standard;
-- promote or replace the L2 problem, core mechanism, and innovation claim;
+- promote or replace the confirmed L2 problem, method cluster, core mechanism,
+  and innovation claim;
 - change another field explicitly frozen by the user;
 - approve paid compute or rental;
 - accept the project-specific risk of reporting favorably selected seeds;
@@ -25,8 +26,14 @@ Everything else is normally autonomous inside the confirmed project scope.
 Before broad tuning, the agent locks the primary metric, its scale, and
 directionality. Setting or replacing that evaluation anchor does not need
 approval, nor do aggregation details, hyperparameters, routine debugging, clear
-failures, or individual candidate methods. A replacement anchor applies
+failures, or individual pre-G2 method clusters. A replacement anchor applies
 prospectively: evidence tied only to an older anchor cannot pass the paper gate.
+Before G2, the agent may switch among paper-grade exploratory problems and
+method clusters inside confirmed L1, but must notify every switch in plain
+language. After G2, replacing the confirmed problem, method cluster, core
+mechanism, or innovation claim remains a scoped PI decision. Engineering
+problems are solved autonomously in L3 and become a notification only when they
+change scientific meaning.
 
 Direct user decisions must be captured in the state file even if no queued
 question preceded them. If an existing project is still doing active method
@@ -65,6 +72,8 @@ Notifications do not count toward the five-question cap. Notify material events
 such as:
 
 - the candidate pool materially narrowed;
+- the active exploratory scientific problem changed;
+- the active method cluster changed;
 - a promising method completed ceiling tuning;
 - evidence changed the project-level interpretation;
 - the next model family will change;
@@ -81,6 +90,10 @@ Use plain language:
 为什么准备改变：
 接下来做什么：
 ```
+
+For a `problem_switch` or `method_cluster_switch`, also record the previous and
+new stable IDs with the controller. The IDs make the change recoverable after a
+restart; the plain-language explanation remains the user-facing notification.
 
 Translate metrics into their consequence. Do not send only run names or
 unexplained abbreviations.
@@ -199,8 +212,8 @@ fixed 20-minute research loop:
    decision boundary; the 20-minute mark is relevant only to an unanswered
    question's batching/revisit condition;
 2. run `status STATE --compact`; when `wakeup_changed_since_ack` is false,
-   compare the current artifact/process fingerprint with
-   `last_acknowledged_artifact_fingerprint` before loading the full
+   compare each active job's current artifact/process fingerprint with its entry
+   in `acknowledged_artifact_fingerprints` before loading the full
    state, literature, or analysis; a next-check reschedule alone is not a
    meaningful change, while an unanswered question crossing the 20-minute
    batching boundary changes the fingerprint once;
@@ -209,7 +222,10 @@ fixed 20-minute research loop:
 4. if evidence changed, analyze it and launch at most one next authorized
    experiment batch; after the state write succeeds, persist the processed
    semantic and artifact fingerprints by reading compact status again and using
-   its new fingerprint with `monitor-ack` before scheduling another wakeup;
+   its new fingerprint with
+   `monitor-ack --job-id JOB --artifact-fingerprint VALUE` before scheduling
+   another wakeup. Omission preserves every existing artifact acknowledgement;
+   use `--clear-artifact-fingerprint` only to clear the named job explicitly;
 5. stop future wakeups before costly work when five PI questions are active, a
    required user decision blocks the branch, the paper gate is reached, the
    user pauses/stops, or no authorized promising action remains.
@@ -232,13 +248,17 @@ Within the current project and authorization:
 
 - use an available GPU by default;
 - identify and verify the external-baseline roster before broad ceiling tuning;
+- ensure that roster has exactly one source-checked row for every adopted
+  dataset before locking the evaluation anchor;
 - lock the primary metric, scale, and direction before broad ceiling tuning;
 - tune a promising method to estimate its current-project ceiling;
 - close low-potential methods after implementation, baseline, and diagnostic
   sanity checks;
+- switch to another justified method cluster or paper-grade problem when the
+  current cluster or problem is exhausted, and notify the user;
 - notify model-family changes;
 - handle routine metrics, hyperparameters, code details, and ordinary debugging
-  autonomously;
+  autonomously in L3 rather than presenting them as L2 innovations;
 - apply changed non-frozen gates prospectively or by explicit re-evaluation,
   rather than relabeling old runs.
 

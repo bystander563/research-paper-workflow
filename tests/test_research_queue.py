@@ -62,6 +62,26 @@ class ResearchQueueCLITest(unittest.TestCase):
     def l2(self) -> Path:
         return self.root / ".codex" / "research" / "L2" / "D001.md"
 
+    def comparison_roles(self, dataset: str) -> dict[str, dict[str, str]]:
+        return {
+            "dataset_origin": {
+                "status": "COVERED",
+                "evidence": f"{dataset} paper reference result recorded in L2",
+            },
+            "recent_top_conference": {
+                "status": "COVERED",
+                "evidence": f"recent top-conference comparator for {dataset}",
+            },
+            "different_published_mechanism": {
+                "status": "COVERED",
+                "evidence": f"different published mechanism for {dataset}",
+            },
+            "strong_simple": {
+                "status": "COVERED",
+                "evidence": f"strong simple comparator for {dataset}",
+            },
+        }
+
     def managed_text(self, path: Path, name: str) -> str:
         text = path.read_text(encoding="utf-8")
         start = f"<!-- RPW:{name}:START -->"
@@ -133,6 +153,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             "cross-site classification",
             "--dataset",
             "Dataset-A+Dataset-B",
+            "--primary-dataset",
+            "Dataset-A",
+            "--supporting-dataset",
+            "Dataset-B",
             "--unexposed-dataset-search",
             "Dataset-C found as an unexposed transfer candidate",
             "--competitive-bar",
@@ -146,7 +170,77 @@ class ResearchQueueCLITest(unittest.TestCase):
         ]
         if minimum_gain is not None:
             args.extend(["--minimum-paper-gain-points", str(minimum_gain)])
-        return self.run_cli(*args, ok=ok)
+        result = self.run_cli(*args, ok=ok)
+        if ok:
+            self.set_baseline_roster(status="IDENTIFIED")
+        return result
+
+    def set_baseline_roster(
+        self,
+        status: str,
+        primary_metric: str = "balanced accuracy",
+        metric_scale: str = "unit_interval",
+        baseline_score: float = 0.80,
+        our_score: float = 0.82,
+    ) -> subprocess.CompletedProcess[str] | None:
+        baseline_search_scope = "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28"
+        baseline_source = "baseline citation and result table recorded in L2"
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        direction = state["layer_checkpoints"]["direction"]
+        rows = []
+        for index, adopted in enumerate(direction["payload"]["adopted_datasets"]):
+            primary = adopted["role"] == "primary"
+            rows.append(
+                {
+                    "dataset": adopted["dataset"],
+                    "role": adopted["role"],
+                    "baseline": (
+                        "Baseline B, recent top-conference paper"
+                        if primary
+                        else "Baseline C, recent top-conference paper"
+                    ),
+                    "venue_year": "SIGIR 2025" if primary else "KDD 2024",
+                    "source": (
+                        baseline_source
+                        if primary
+                        else "supporting baseline citation recorded in L2"
+                    ),
+                    "search_scope": baseline_search_scope,
+                    "protocol_match": (
+                        "same task and protocol"
+                        if primary
+                        else "same task and dataset-specific protocol"
+                    ),
+                    "protocol_status": {
+                        "MATCHED": "VERIFIED_MATCH",
+                        "BLOCKED": "BLOCKED",
+                        "IDENTIFIED": "PENDING_MATCH",
+                    }[status],
+                    "comparison_roles": self.comparison_roles(adopted["dataset"]),
+                    "metric": primary_metric,
+                    "metric_scale": metric_scale,
+                    "baseline_score": baseline_score if status == "MATCHED" else None,
+                    "our_score": our_score if status == "MATCHED" else None,
+                    "status": status,
+                }
+            )
+        current_rows = (state.get("dataset_baseline_roster") or {}).get("rows")
+        if current_rows == rows:
+            return None
+        return self.run_cli(
+            "baseline-roster",
+            self.state,
+            "--rows-json",
+            json.dumps(rows),
+            "--record",
+            self.root
+            / ".codex"
+            / "research"
+            / "L2"
+            / f"{direction['id']}.md",
+            "--reason",
+            f"test fixture roster status {status}",
+        )
 
     def confirm_science(self, decision_id: str) -> None:
         self.run_cli(
@@ -162,16 +256,30 @@ class ResearchQueueCLITest(unittest.TestCase):
             decision_id,
             "--direction-id",
             "D001",
+            "--problem-id",
+            "P-SHORTCUT",
+            "--method-cluster-id",
+            "M-RESIDUAL",
             "--problem",
             "site-specific shortcuts",
+            "--nearest-work-gap",
+            "recent methods suppress domains but do not isolate shortcut information",
+            "--paper-grade-rationale",
+            "the unresolved shortcut mechanism changes the scientific estimand",
             "--core-mechanism",
             "source-identifiable residual representation",
+            "--falsifiable-prediction",
+            "removing source-identifiable residuals improves unseen-site accuracy",
+            "--contribution-type",
+            "mechanism",
             "--innovation-claim",
             "remove shortcut information without target labels",
             "--external-baseline-status",
             "key matched comparison complete",
             "--ceiling-summary",
             "promising stable gain across held sites",
+            "--problem-portfolio-record",
+            self.l2,
             "--nearest-work-record",
             self.l2,
             "--baseline-record",
@@ -214,7 +322,17 @@ class ResearchQueueCLITest(unittest.TestCase):
         seed_risk_pi_decision: str | None = None,
         seed_risk_pi_outcome: str | None = None,
         set_anchor: bool = True,
+        set_roster: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        if set_roster:
+            self.set_baseline_roster(
+                status="MATCHED",
+                primary_metric=primary_metric,
+                metric_scale=metric_scale,
+                baseline_score=baseline_score,
+                our_score=our_score,
+            )
         state = json.loads(self.state.read_text(encoding="utf-8"))
         if set_anchor and state.get("evaluation_anchor") is None:
             self.set_evaluation_anchor(primary_metric, metric_scale)
@@ -230,6 +348,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                     "source": baseline_source,
                     "search_scope": baseline_search_scope,
                     "protocol_match": "same task and protocol",
+                    "protocol_status": "VERIFIED_MATCH",
+                    "comparison_roles": self.comparison_roles("Dataset-A"),
                     "metric": primary_metric,
                     "metric_scale": metric_scale,
                     "baseline_score": baseline_score,
@@ -244,6 +364,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                     "source": "supporting baseline citation recorded in L2",
                     "search_scope": baseline_search_scope,
                     "protocol_match": "same task and dataset-specific protocol",
+                    "protocol_status": "VERIFIED_MATCH",
+                    "comparison_roles": self.comparison_roles("Dataset-B"),
                     "metric": primary_metric,
                     "metric_scale": metric_scale,
                     "baseline_score": baseline_score,
@@ -473,6 +595,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "task",
             "--dataset",
             "data",
+            "--primary-dataset",
+            "data",
             "--unexposed-dataset-search",
             "searched registry; candidate data-2 found",
             "--competitive-bar",
@@ -509,6 +633,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--task-type",
             "task",
             "--dataset",
+            "data",
+            "--primary-dataset",
             "data",
             "--unexposed-dataset-search",
             "searched registry; candidate data-2 found",
@@ -1156,10 +1282,12 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.add_answer("direction", "Choose D001?", outcome="select")
         )
         self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_baseline_roster(status="MATCHED")
+        self.set_evaluation_anchor()
         self.l2.unlink()
         assessment = self.root / "paper-ready.md"
         assessment.write_text("# Paper ready\n", encoding="utf-8")
-        result = self.enter_paper_ready(assessment, ok=False)
+        result = self.enter_paper_ready(assessment, ok=False, set_anchor=False)
         self.assertIn("complete L1 and L2", result.stderr)
 
     def test_phase_rejects_irrelevant_assessment_fields(self) -> None:
@@ -1248,7 +1376,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
         summary = json.loads(self.run_cli("status", self.state).stdout)
-        self.assertEqual(summary["schema_version"], 11)
+        self.assertEqual(summary["schema_version"], 13)
         self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
         self.assertEqual(
             summary["instruction_maintenance"]["recent_updates"], []
@@ -1276,6 +1404,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--task-type",
             "new task",
             "--dataset",
+            "new data",
+            "--primary-dataset",
             "new data",
             "--unexposed-dataset-search",
             "new-data-2 is an unexposed candidate",
@@ -1358,9 +1488,21 @@ class ResearchQueueCLITest(unittest.TestCase):
             direction_q,
             "--direction-id",
             "D001",
+            "--problem-id",
+            "P-AUTHORITY",
+            "--method-cluster-id",
+            "M-AUTHORITY",
             "--problem",
             "problem",
+            "--nearest-work-gap",
+            "gap",
+            "--paper-grade-rationale",
+            "paper-grade mechanism",
             "--core-mechanism",
+            "mechanism",
+            "--falsifiable-prediction",
+            "prediction",
+            "--contribution-type",
             "mechanism",
             "--innovation-claim",
             "claim",
@@ -1368,6 +1510,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "matched",
             "--ceiling-summary",
             "summary",
+            "--problem-portfolio-record",
+            self.l2,
             "--nearest-work-record",
             self.l2,
             "--baseline-record",
@@ -1404,6 +1548,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--task-type",
             "task",
             "--dataset",
+            "data",
+            "--primary-dataset",
             "data",
             "--unexposed-dataset-search",
             "searched registry; candidate data-2 found",
@@ -1479,6 +1625,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "sequential recommendation",
             "--dataset",
             "Dataset-C",
+            "--primary-dataset",
+            "Dataset-C",
             "--unexposed-dataset-search",
             "Dataset-D found as an unexposed candidate",
             "--competitive-bar",
@@ -1490,6 +1638,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--paper-ready-threshold",
             "new threshold",
         )
+        self.set_baseline_roster(status="IDENTIFIED")
         direction = self.managed_text(self.l1, "DIRECTION_DECISION_CURRENT")
         standard = self.managed_text(self.l1, "DIRECTION_STANDARD_CURRENT")
         self.assertIn("D002", direction)
@@ -1519,22 +1668,38 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "approve",
                 "--direction-id",
                 "D002",
+                "--problem-id",
+                f"P-{science_id}",
+                "--method-cluster-id",
+                f"M-{science_id}",
                 "--problem",
                 problem,
+                "--nearest-work-gap",
+                f"nearest-work gap for {science_id}",
+                "--paper-grade-rationale",
+                f"paper-grade scientific mechanism for {science_id}",
                 "--core-mechanism",
                 f"mechanism {science_id}",
+                "--falsifiable-prediction",
+                f"prediction for {science_id}",
+                "--contribution-type",
+                "mechanism",
                 "--innovation-claim",
                 f"claim {science_id}",
                 "--external-baseline-status",
                 "matched",
                 "--ceiling-summary",
                 "competitive",
+                "--problem-portfolio-record",
+                l2_d2,
                 "--nearest-work-record",
                 l2_d2,
                 "--baseline-record",
                 l2_d2,
                 "--result-record",
                 l2_d2,
+                "--change-notification",
+                f"Switch to the {science_id} paper-grade problem and mechanism.",
             )
         science = self.managed_text(l2_d2, "SCIENCE_CURRENT")
         self.assertIn("S002", science)
@@ -1584,6 +1749,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             "cross-site classification",
             "--dataset",
             "Dataset-A+Dataset-B",
+            "--primary-dataset",
+            "Dataset-A",
+            "--supporting-dataset",
+            "Dataset-B",
             "--unexposed-dataset-search",
             "Dataset-E is now the preferred unexposed candidate",
             "--competitive-bar",
@@ -1620,6 +1789,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--task-type",
             "task",
             "--dataset",
+            "data",
+            "--primary-dataset",
             "data",
             "--competitive-bar",
             "bar",
@@ -1760,6 +1931,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "new task",
             "--dataset",
             "new data",
+            "--primary-dataset",
+            "new data",
             "--unexposed-dataset-search",
             "new-data-2 is an unexposed candidate",
             "--competitive-bar",
@@ -1771,6 +1944,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--paper-ready-threshold",
             "new threshold",
         )
+        self.set_baseline_roster(status="IDENTIFIED")
         l2_d2 = self.root / ".codex" / "research" / "L2" / "D002.md"
         self.run_cli(
             "confirm",
@@ -1787,16 +1961,30 @@ class ResearchQueueCLITest(unittest.TestCase):
             "approve",
             "--direction-id",
             "D002",
+            "--problem-id",
+            "P-S002",
+            "--method-cluster-id",
+            "M-S002",
             "--problem",
             "p2",
+            "--nearest-work-gap",
+            "nearest work leaves p2 unresolved",
+            "--paper-grade-rationale",
+            "p2 supports a scientific mechanism claim",
             "--core-mechanism",
             "m2",
+            "--falsifiable-prediction",
+            "m2 improves the primary outcome",
+            "--contribution-type",
+            "mechanism",
             "--innovation-claim",
             "i2",
             "--external-baseline-status",
             "matched",
             "--ceiling-summary",
             "good",
+            "--problem-portfolio-record",
+            l2_d2,
             "--nearest-work-record",
             l2_d2,
             "--baseline-record",
@@ -2023,7 +2211,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("baseline_search_scope", result.stderr)
         self.assertIn("baseline_score", result.stderr)
         self.assertIn("primary_comparison_dataset", result.stderr)
-        self.assertIn("dataset_baseline_matrix", result.stderr)
+        self.assertIn("competitive_bar_assessment", result.stderr)
         self.assertIn("evaluation_anchor_evidence", result.stderr)
         self.assertIn("stability_evidence", result.stderr)
 
@@ -2149,7 +2337,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 11)
+        self.assertEqual(migrated["schema_version"], 13)
         self.assertEqual(
             migrated["layer_checkpoints"]["direction"]["status"],
             "LEGACY_CONFIRMED_NEEDS_AUDIT",
@@ -2184,9 +2372,9 @@ class ResearchQueueCLITest(unittest.TestCase):
         legacy_assessment["payload_sha256_at_gate"] = "legacy-schema-v9"
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
-        self.run_cli("notify", self.state, "--text", "save schema-v11 migration")
+        self.run_cli("notify", self.state, "--text", "save schema-v12 migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 11)
+        self.assertEqual(migrated["schema_version"], 13)
         self.assertTrue(migrated["evaluation_anchor"]["legacy_derived"])
         self.assertEqual(migrated["evaluation_anchor"]["revision"], 1)
         self.assertIsNone(migrated["paper_ready_assessment"])
@@ -2198,13 +2386,24 @@ class ResearchQueueCLITest(unittest.TestCase):
         audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
         codes = {issue["code"] for issue in audit["control_issues"]}
         self.assertIn("EVALUATION_ANCHOR_LEGACY_RELOCK_REQUIRED", codes)
+        self.assertIn("DATASET_BASELINE_ROSTER_INVALID", codes)
 
+        self.set_baseline_roster(status="IDENTIFIED")
         self.set_evaluation_anchor()
         relocked = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(relocked["evaluation_anchor"]["revision"], 2)
         self.assertFalse(relocked["evaluation_anchor"]["legacy_derived"])
         self.assertIsNone(relocked["paper_ready_assessment"])
-        self.run_cli("audit", self.state)
+        final_audit = json.loads(
+            self.run_cli("audit", self.state, ok=False).stdout
+        )
+        self.assertIn(
+            "LEGACY_SCIENCE_NEEDS_RECONFIRMATION",
+            {issue["code"] for issue in final_audit["control_issues"]},
+        )
+        self.assertGreaterEqual(
+            len(relocked["invalidated_paper_assessments"]), 1
+        )
 
     def test_recent_notifications_are_bounded(self) -> None:
         self.init_exploration()
@@ -2451,6 +2650,22 @@ class ResearchQueueCLITest(unittest.TestCase):
 
     def test_monitor_ack_persists_processed_semantic_and_artifact_state(self) -> None:
         self.init_exploration()
+        self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "baseline run",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-poll",
+            "after completion",
+            "--next-action",
+            "inspect results",
+        )
         first = json.loads(self.run_cli("status", self.state, "--compact").stdout)
         self.assertTrue(first["wakeup_changed_since_ack"])
         acknowledged = json.loads(
@@ -2459,13 +2674,15 @@ class ResearchQueueCLITest(unittest.TestCase):
                 self.state,
                 "--wakeup-fingerprint",
                 first["wakeup_fingerprint"],
+                "--job-id",
+                "J001",
                 "--artifact-fingerprint",
                 "results-sha256:abc123",
             ).stdout
         )
         self.assertFalse(acknowledged["wakeup_changed_since_ack"])
         self.assertEqual(
-            acknowledged["last_acknowledged_artifact_fingerprint"],
+            acknowledged["acknowledged_artifact_fingerprints"]["J001"],
             "results-sha256:abc123",
         )
 
@@ -2969,6 +3186,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "task",
                 "--dataset",
                 "data",
+                "--primary-dataset",
+                "data",
                 "--unexposed-dataset-search",
                 "searched registry; candidate data-2 found",
                 "--competitive-bar",
@@ -2998,6 +3217,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--task-type",
             "task",
             "--dataset",
+            "data",
+            "--primary-dataset",
             "data",
             "--unexposed-dataset-search",
             "candidate data-2 found",
@@ -3054,16 +3275,30 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "approve",
                 "--direction-id",
                 "D001",
+                "--problem-id",
+                "P-EXTERNAL",
+                "--method-cluster-id",
+                "M-EXTERNAL",
                 "--problem",
                 "p",
+                "--nearest-work-gap",
+                "nearest work leaves the identified failure unresolved",
+                "--paper-grade-rationale",
+                "the failure identifies a general scientific mechanism",
                 "--core-mechanism",
                 "m",
+                "--falsifiable-prediction",
+                "the mechanism improves unseen-domain outcomes",
+                "--contribution-type",
+                "mechanism",
                 "--innovation-claim",
                 "i",
                 "--external-baseline-status",
                 "matched",
                 "--ceiling-summary",
                 "good",
+                "--problem-portfolio-record",
+                evidence,
                 "--nearest-work-record",
                 evidence,
                 "--baseline-record",
@@ -3110,7 +3345,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("notify", self.state, "--text", "save migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
         questions = {q["id"]: q for q in migrated["macro_questions"]}
-        self.assertEqual(migrated["schema_version"], 11)
+        self.assertEqual(migrated["schema_version"], 13)
         self.assertEqual(questions[first]["superseded_by"], second)
         self.assertEqual(
             migrated["decision_target_revisions"]["direction:D001"], 2
@@ -3129,7 +3364,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 11)
+        self.assertEqual(migrated["schema_version"], 13)
         self.assertEqual(
             migrated["instruction_maintenance"]["recent_scope_removals"], []
         )
@@ -3158,6 +3393,507 @@ class ResearchQueueCLITest(unittest.TestCase):
         )
         codes = {issue["code"] for issue in summary["control_issues"]}
         self.assertIn("LEGACY_DIRECTION_NEEDS_RECONFIRMATION", codes)
+
+    def test_baseline_roster_must_cover_every_adopted_dataset(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        incomplete = [state["dataset_baseline_roster"]["rows"][0]]
+        blocked = self.run_cli(
+            "baseline-roster",
+            self.state,
+            "--rows-json",
+            json.dumps(incomplete),
+            "--record",
+            self.l2,
+            "--reason",
+            "attempt incomplete coverage",
+            ok=False,
+        )
+        self.assertIn("exactly one row for every adopted dataset", blocked.stderr)
+
+    def test_evaluation_anchor_requires_pre_tuning_baseline_roster(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["dataset_baseline_roster"] = None
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        blocked = self.set_evaluation_anchor(ok=False)
+        self.assertIn("baseline roster", blocked.stderr)
+
+    def test_baseline_roster_requires_all_comparison_roles(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        rows = state["dataset_baseline_roster"]["rows"]
+        del rows[0]["comparison_roles"]["strong_simple"]
+        blocked = self.run_cli(
+            "baseline-roster",
+            self.state,
+            "--rows-json",
+            json.dumps(rows),
+            "--record",
+            self.l2,
+            "--reason",
+            "attempt incomplete role coverage",
+            ok=False,
+        )
+        self.assertIn("comparison_roles must contain exactly", blocked.stderr)
+
+    def test_verified_protocol_cannot_contain_explicit_mismatch(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        rows = state["dataset_baseline_roster"]["rows"]
+        for row in rows:
+            row["status"] = "MATCHED"
+            row["protocol_status"] = "VERIFIED_MATCH"
+            row["baseline_score"] = 0.80
+            row["our_score"] = 0.82
+        rows[0]["protocol_match"] = "different split; not comparable"
+        blocked = self.run_cli(
+            "baseline-roster",
+            self.state,
+            "--rows-json",
+            json.dumps(rows),
+            "--record",
+            self.l2,
+            "--reason",
+            "attempt contradictory protocol claim",
+            ok=False,
+        )
+        self.assertIn("claims VERIFIED_MATCH", blocked.stderr)
+
+    def test_nonheadline_comparison_role_can_keep_concrete_blocker(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        rows = state["dataset_baseline_roster"]["rows"]
+        rows[0]["comparison_roles"]["strong_simple"] = {
+            "status": "BLOCKED",
+            "evidence": "No official simple baseline supports this label space; narrow the claim",
+        }
+        result = self.run_cli(
+            "baseline-roster",
+            self.state,
+            "--rows-json",
+            json.dumps(rows),
+            "--record",
+            self.l2,
+            "--reason",
+            "retain a concrete non-headline blocker",
+        )
+        roster = json.loads(result.stdout)["dataset_baseline_roster"]
+        self.assertEqual(
+            roster["rows"][0]["comparison_roles"]["strong_simple"]["status"],
+            "BLOCKED",
+        )
+
+    def test_paper_gate_requires_recent_top_conference_role_coverage(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        rows = state["dataset_baseline_roster"]["rows"]
+        for row in rows:
+            row["status"] = "MATCHED"
+            row["protocol_status"] = "VERIFIED_MATCH"
+            row["baseline_score"] = 0.80
+            row["our_score"] = 0.82
+        rows[0]["comparison_roles"]["recent_top_conference"] = {
+            "status": "BLOCKED",
+            "evidence": "No eligible recent top-conference comparison has been verified",
+        }
+        self.run_cli(
+            "baseline-roster",
+            self.state,
+            "--rows-json",
+            json.dumps(rows),
+            "--record",
+            self.l2,
+            "--reason",
+            "record unresolved headline comparator",
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_evaluation_anchor()
+        assessment = self.root / "paper-ready-role-blocked.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        blocked = self.enter_paper_ready(
+            assessment,
+            ok=False,
+            set_anchor=False,
+            set_roster=False,
+        )
+        self.assertIn("MATCHED external-baseline row", blocked.stderr)
+
+    def test_live_l2_updates_do_not_invalidate_embedded_roster_receipt(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        with self.l2.open("a", encoding="utf-8") as handle:
+            handle.write("\n## New problem evidence\n\nA newly verified observation.\n")
+        self.set_evaluation_anchor()
+        audit = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertNotIn(
+            "DATASET_BASELINE_ROSTER_RECORD_CHANGED",
+            {issue["code"] for issue in audit["control_issues"]},
+        )
+
+    def test_roster_change_invalidates_pending_paper_packet(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-roster-stale.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+        self.assertEqual(
+            json.loads(self.state.read_text(encoding="utf-8"))["phase"],
+            "paper_ready_pending_pi",
+        )
+
+        self.set_baseline_roster(
+            status="MATCHED", baseline_score=0.81, our_score=0.83
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["phase"], "confirmed_project")
+        self.assertIsNone(state["paper_ready_assessment"])
+        self.assertEqual(
+            state["invalidated_paper_assessments"][-1]["reason"],
+            "dataset_baseline_roster_change",
+        )
+
+    def test_confirmed_problem_or_method_switch_requires_notification(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        common = [
+            "confirm",
+            self.state,
+            "--layer",
+            "science",
+            "--id",
+            "S002",
+            "--record",
+            self.l2,
+            "--pi-decision",
+            "Replace the confirmed L2 mechanism",
+            "--pi-outcome",
+            "approve",
+            "--direction-id",
+            "D001",
+            "--problem-id",
+            "P-SHORTCUT-2",
+            "--method-cluster-id",
+            "M-CAUSAL",
+            "--problem",
+            "shortcut transport across sites",
+            "--nearest-work-gap",
+            "nearest methods do not model shortcut transport",
+            "--paper-grade-rationale",
+            "the transport failure supports a general mechanism claim",
+            "--core-mechanism",
+            "causal shortcut transport regularization",
+            "--falsifiable-prediction",
+            "transport regularization improves unseen-site accuracy",
+            "--contribution-type",
+            "mechanism",
+            "--innovation-claim",
+            "identify and interrupt shortcut transport",
+            "--external-baseline-status",
+            "roster identified for every adopted dataset",
+            "--ceiling-summary",
+            "promising ceiling",
+            "--problem-portfolio-record",
+            self.l2,
+            "--nearest-work-record",
+            self.l2,
+            "--baseline-record",
+            self.l2,
+            "--result-record",
+            self.l2,
+        ]
+        blocked = self.run_cli(*common, ok=False)
+        self.assertIn("--change-notification", blocked.stderr)
+        self.run_cli(
+            *common,
+            "--change-notification",
+            "旧问题已无潜力，改查跨站点 shortcut transport，并切换核心机制。",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        kinds = [item["kind"] for item in state["notifications"][-2:]]
+        self.assertEqual(kinds, ["problem_switch", "method_cluster_switch"])
+        self.assertEqual(
+            state["notifications"][-2]["transition"],
+            {"from_id": "P-SHORTCUT", "to_id": "P-SHORTCUT-2"},
+        )
+        self.assertEqual(
+            state["notifications"][-1]["transition"],
+            {"from_id": "M-RESIDUAL", "to_id": "M-CAUSAL"},
+        )
+
+    def test_exploratory_switch_notification_requires_typed_transition(self) -> None:
+        self.init_exploration()
+        missing = self.run_cli(
+            "notify",
+            self.state,
+            "--kind",
+            "method_cluster_switch",
+            "--text",
+            "旧方法簇没有潜力，改测另一个机制。",
+            ok=False,
+        )
+        self.assertIn("--from-id and --to-id", missing.stderr)
+        before = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )["wakeup_fingerprint"]
+        self.run_cli(
+            "notify",
+            self.state,
+            "--kind",
+            "method_cluster_switch",
+            "--from-id",
+            "M-OLD",
+            "--to-id",
+            "M-NEW",
+            "--text",
+            "旧方法簇没有潜力，改测另一个可证伪机制；L1 不变。",
+        )
+        compact = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        self.assertNotEqual(before, compact["wakeup_fingerprint"])
+        self.assertEqual(
+            compact["latest_scientific_switch"],
+            {
+                "id": "N001",
+                "kind": "method_cluster_switch",
+                "transition": {"from_id": "M-OLD", "to_id": "M-NEW"},
+            },
+        )
+
+    def test_engineering_only_voting_cannot_be_l2_core_mechanism(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        blocked = self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "science",
+            "--id",
+            "S-VOTE",
+            "--record",
+            self.l2,
+            "--pi-decision",
+            "Evaluate this candidate",
+            "--pi-outcome",
+            "approve",
+            "--direction-id",
+            "D001",
+            "--problem-id",
+            "P-VOTE",
+            "--method-cluster-id",
+            "M-VOTE",
+            "--problem",
+            "model disagreement",
+            "--nearest-work-gap",
+            "existing systems disagree",
+            "--paper-grade-rationale",
+            "claimed mechanism",
+            "--core-mechanism",
+            "weighted expert voting",
+            "--falsifiable-prediction",
+            "voting raises accuracy",
+            "--contribution-type",
+            "mechanism",
+            "--innovation-claim",
+            "combine several experts",
+            "--external-baseline-status",
+            "roster identified",
+            "--ceiling-summary",
+            "unknown",
+            "--problem-portfolio-record",
+            self.l2,
+            "--nearest-work-record",
+            self.l2,
+            "--baseline-record",
+            self.l2,
+            "--result-record",
+            self.l2,
+            ok=False,
+        )
+        self.assertIn("engineering-only", blocked.stderr)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["layer_checkpoints"]["science"]["status"], "UNSET")
+
+    def test_monitor_artifact_acknowledgements_are_per_job_and_explicitly_cleared(self) -> None:
+        self.init_exploration()
+        for job_id in ("J001", "J002"):
+            self.run_cli(
+                "job-add",
+                self.state,
+                "--id",
+                job_id,
+                "--description",
+                f"run {job_id}",
+                "--command",
+                f"python {job_id}.py",
+                "--status",
+                "running",
+                "--next-poll",
+                "after completion",
+                "--next-action",
+                "inspect artifact",
+            )
+        compact = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        for job_id, artifact in (("J001", "sha:a"), ("J002", "sha:b")):
+            compact = json.loads(
+                self.run_cli(
+                    "monitor-ack",
+                    self.state,
+                    "--wakeup-fingerprint",
+                    compact["wakeup_fingerprint"],
+                    "--job-id",
+                    job_id,
+                    "--artifact-fingerprint",
+                    artifact,
+                ).stdout
+            )
+        semantic_only = json.loads(
+            self.run_cli(
+                "monitor-ack",
+                self.state,
+                "--wakeup-fingerprint",
+                compact["wakeup_fingerprint"],
+            ).stdout
+        )
+        self.assertEqual(
+            semantic_only["acknowledged_artifact_fingerprints"],
+            {"J001": "sha:a", "J002": "sha:b"},
+        )
+        cleared = json.loads(
+            self.run_cli(
+                "monitor-ack",
+                self.state,
+                "--wakeup-fingerprint",
+                semantic_only["wakeup_fingerprint"],
+                "--job-id",
+                "J001",
+                "--clear-artifact-fingerprint",
+            ).stdout
+        )
+        self.assertEqual(
+            cleared["acknowledged_artifact_fingerprints"], {"J002": "sha:b"}
+        )
+
+    def test_schema_v11_migration_retains_invalidated_paper_pointer(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-schema-v11.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 11
+        for row in state["paper_ready_assessment"]["dataset_baseline_matrix"]:
+            row.pop("protocol_status", None)
+            row.pop("comparison_roles", None)
+        state.pop("dataset_baseline_roster", None)
+        state.pop("dataset_baseline_roster_history", None)
+        state.pop("invalidated_paper_assessments", None)
+        state.pop("invalidated_paper_assessment_count", None)
+        state["monitoring"] = {
+            "last_acknowledged_wakeup_fingerprint": None,
+            "last_acknowledged_artifact_fingerprint": "legacy-artifact",
+            "acknowledged_at": None,
+        }
+        state["layer_checkpoints"]["direction"]["payload"].pop(
+            "adopted_datasets", None
+        )
+        for field in (
+            "problem_id",
+            "method_cluster_id",
+            "nearest_work_gap",
+            "paper_grade_rationale",
+            "falsifiable_prediction",
+            "contribution_type",
+        ):
+            state["layer_checkpoints"]["science"]["payload"].pop(field, None)
+        state["layer_checkpoints"]["science"]["payload"]["evidence_refs"].pop(
+            "problem_portfolio", None
+        )
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        self.run_cli("notify", self.state, "--text", "trigger schema-v12 migration")
+        migrated = json.loads(self.state.read_text(encoding="utf-8"))
+        receipt = migrated["invalidated_paper_assessments"][-1]
+        self.assertEqual(receipt["path"], "paper-ready-schema-v11.md")
+        self.assertEqual(receipt["direction_id"], "D001")
+        self.assertEqual(
+            migrated["layer_checkpoints"]["science"]["status"],
+            "LEGACY_CONFIRMED_NEEDS_PROBLEM_STRUCTURE",
+        )
+        self.assertEqual(
+            migrated["monitoring"]["legacy_unscoped_artifact_fingerprint"],
+            "legacy-artifact",
+        )
+        self.assertEqual(migrated["schema_version"], 13)
+        self.assertTrue(
+            migrated["dataset_baseline_roster"]["schema_v13_review_required"]
+        )
+        self.assertEqual(
+            migrated["dataset_baseline_roster"]["rows"][0]["protocol_status"],
+            "LEGACY_UNVERIFIED",
+        )
+
+    def test_schema_v12_paper_packet_requires_baseline_evidence_review(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-schema-v12.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 12
+        for row in state["dataset_baseline_roster"]["rows"]:
+            row.pop("protocol_status", None)
+            row.pop("comparison_roles", None)
+        for row in state["paper_ready_assessment"]["dataset_baseline_matrix"]:
+            row.pop("protocol_status", None)
+            row.pop("comparison_roles", None)
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        migrated = json.loads(
+            self.run_cli("status", self.state).stdout
+        )
+        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["phase"], "confirmed_project")
+        self.assertIsNone(migrated["paper_ready_assessment_usable"])
+        self.assertIn(
+            "DATASET_BASELINE_ROSTER_INVALID",
+            {item["code"] for item in migrated["control_issues"]},
+        )
 
 
 if __name__ == "__main__":

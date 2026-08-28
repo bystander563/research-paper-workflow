@@ -10,16 +10,27 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 
 - starts exploration from a user-confirmed venue or timeline, domain, and optional idea;
 - evaluates task meaning, task–dataset fit, benchmark headroom, nearest-work novelty, observed failure, intuition, and mathematical fit;
-- keeps three linked layers: durable L1 task/dataset direction, durable L2 scientific story/evidence, and agent-managed L3 code/execution;
-- requires the user to confirm the L1 direction and project evidence standard, then later promote the L2 problem, core mechanism, and innovation claim;
+- keeps three linked layers: durable L1 task/adopted-dataset direction, durable
+  L2 nearest-work problem portfolio/problem-linked method clusters/evidence, and
+  agent-managed L3 engineering and execution;
+- requires the user to confirm the L1 direction and project evidence standard,
+  then later promote the L2 problem, method cluster, core mechanism, and
+  innovation claim;
 - binds each queued approval to one decision target, supersedes it when a newer decision for that target exists, and consumes it once;
 - keeps informational replies active, while deferred decisions move to a visible queue with a required revisit condition and do not count toward the five-question pause;
 - requires a dataset-origin reference, a recent top-conference comparable method, another published mechanism, and a strong simple baseline before paper-level claims;
-- maintains one dataset-specific recent top-conference external-baseline row for every adopted dataset and compares our method with that dataset's own matched baseline;
+- maintains one dataset-specific recent top-conference external-baseline row for every adopted dataset, explicitly tracks protocol-match status, and records dataset-origin, different-mechanism, and strong-simple comparison coverage or blockers;
+- requires that roster before the evaluation anchor and reads its current
+  revision at the paper gate, so a missing dataset or stale comparator cannot be
+  supplied only at the end;
 - separates external baselines, the proposed method, and internal variants instead of treating “ours versus ours” as competitiveness evidence;
 - locks the primary metric, scale, and direction before broad tuning, while allowing an agent-owned replacement to invalidate older paper-gate evidence prospectively;
 - permits a paper-decision question only after the canonical [workflow G3](references/workflow.md) matched-baseline gain floor passes, includes project-appropriate stability evidence, and then generates a complete decision report before asking the user;
-- avoids engineering-heavy module stacks without a coherent mechanism;
+- admits only paper-grade L2 problems and falsifiable principle/mechanism
+  contributions; expert weighted voting, heuristic fusion, module stacking,
+  threshold tricks, runtime issues, and routine bugs stay in L3 or baselines;
+- notifies the user whenever the active scientific problem or method cluster
+  changes, and still requires PI approval to replace confirmed L2 science;
 - uses existing GPU compute by default and never rents paid compute without approval;
 - tunes only candidates with credible potential and reports their observed ceiling plainly;
 - does not require an archive of every attempt, failed trial, tuning trace, or stopping rule;
@@ -81,7 +92,23 @@ For long-running work, the skill can maintain:
 <project>/.codex/research/L3/D001.md  # optional agent/project-managed index
 ```
 
-The schema-v11 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, the revisioned evaluation anchor, per-dataset external-baseline comparisons, legal phases, structured paper-ready assessment and gain arithmetic, recent notifications, resumable active jobs, manual and question-cap pause state, persistent monitor acknowledgements, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. It serializes mutating commands with an adjacent lock so scheduled and interactive tasks cannot silently overwrite each other's state. It can prune audit scopes for deleted directories while requiring PI approval to remove coverage from a directory that still exists. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. Compass or direction changes also mark invalidated L1/L2 current-state blocks visibly stale. L2 confirmation records the L1 evidence standard plus resolvable nearest-work, external-baseline, and result references. The paper gate requires current-anchor and project-appropriate stability evidence, then generates and content-locks a readable decision report before the user's paper decision. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
+The schema-v13 controller tracks versioned PI decision targets, an explicit L1
+adopted-dataset inventory, a revisioned per-dataset baseline roster with typed
+protocol and comparison-role coverage, paper-grade
+problem and method-cluster IDs, active and deferred question queues,
+research-compass/L1/L2/paper checkpoints, the evaluation anchor, legal phases,
+structured paper-ready assessment and gain arithmetic, bounded invalidated-paper
+receipts, recent typed notifications, resumable active jobs, per-job monitor
+acknowledgements, pause state, frozen-field history, and bounded multi-scope
+project-instruction receipts. It serializes mutating commands with an adjacent
+lock so scheduled and interactive tasks cannot silently overwrite state. `init`
+creates the L1/L2 scaffold; confirmations refresh marked current-state blocks and
+append receipts. The paper gate reads the current roster and anchor, requires
+every adopted dataset to be matched, then generates and content-locks a readable
+decision report before the user's paper decision. Checkpoint and assessment
+records are project-local; external evidence references are read-only. L1/L2
+retain selective science and user decisions; L3 owns engineering detail and may
+use native experiment tracking, be compacted, or be omitted.
 
 Existing projects may retain `.codex/research-ledger.md` as read-only history and create the layered files at the next material checkpoint.
 
@@ -116,22 +143,24 @@ python scripts/research_queue.py question STATE --layer direction --target direc
 python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outcome select
 python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"
 python scripts/research_queue.py reopen STATE --id Q002 --reason "外部 baseline 复现已完成"
-python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --unexposed-dataset-search "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..." --minimum-paper-gain-points 1
+python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --primary-dataset "..." --supporting-dataset "..." --unexposed-dataset-search "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..." --minimum-paper-gain-points 1
+python scripts/research_queue.py baseline-roster STATE --rows-file BASELINE_ROSTER.json --record L2_FILE --reason "source-checked every adopted dataset"
 python scripts/research_queue.py evaluation-anchor STATE --primary-metric "..." --metric-scale unit_interval --metric-direction higher_is_better --reason "..."
-python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
-python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --primary-comparison-dataset "..." --dataset-baseline-matrix '[{"dataset":"...","role":"primary","baseline":"...","venue_year":"...","source":"...","search_scope":"...","protocol_match":"...","metric":"...","metric_scale":"unit_interval","baseline_score":0.80,"our_score":0.81,"status":"MATCHED"}]' --recent-top-conference-baseline "..." --baseline-venue-year "..." --baseline-search-scope "<venues> <year-range>; searched <YYYY-MM-DD>" --baseline-source "..." --protocol-match-evidence "..." --evaluation-anchor-evidence "..." --stability-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
+python scripts/research_queue.py notify STATE --kind method_cluster_switch --from-id M001 --to-id M002 --text "原方法簇缺少潜力，切换到另一条可证伪机制；L1 不变。"
+python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem-id PROBLEM_ID --method-cluster-id CLUSTER_ID --problem "..." --nearest-work-gap "..." --paper-grade-rationale "..." --core-mechanism "..." --falsifiable-prediction "..." --contribution-type mechanism --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --problem-portfolio-record L2_FILE --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
+python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --primary-comparison-dataset "..." --recent-top-conference-baseline "..." --baseline-venue-year "..." --baseline-search-scope "<venues> <year-range>; searched <YYYY-MM-DD>" --baseline-source "..." --protocol-match-evidence "..." --evaluation-anchor-evidence "..." --stability-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
 python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
 python scripts/research_queue.py paper-revoke STATE --pi-decision "撤销本次写作授权" --reason "..."
 python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-poll "..." --next-action "..."
 python scripts/research_queue.py status STATE --compact
-python scripts/research_queue.py monitor-ack STATE --wakeup-fingerprint CURRENT --artifact-fingerprint CURRENT_ARTIFACT
+python scripts/research_queue.py monitor-ack STATE --wakeup-fingerprint CURRENT --job-id J001 --artifact-fingerprint CURRENT_ARTIFACT
 python scripts/research_queue.py status STATE
 ```
 
 The controller cannot keep a Codex task alive by itself. When unattended
 monitoring is explicitly requested, use the host scheduled-task mechanism as a
 compact state-aware wakeup at the next meaningful time. Read `status --compact`
-and use `wakeup_changed_since_ack` plus the current artifact fingerprint before the full research state;
+and use `wakeup_changed_since_ack` plus each job's saved artifact fingerprint before the full research state;
 rescheduling alone does not change that fingerprint, while a pending question
 crossing the 20-minute batching boundary changes it once. After successfully
 processing a change, persist it with `monitor-ack`. Stop future wakeups at

@@ -20,10 +20,11 @@ universal rule.
 user confirms venue/time + domain (+ optional idea)
 -> scout meaningful task-dataset pairs
 -> USER L1: select task + dataset + project evidence standard
--> map nearest work, external baselines, failure, method, and evidence
+-> map nearest-work problem clusters + adopted-dataset baseline roster
+-> maintain paper-grade problem portfolio + problem-linked method clusters
 -> agent locks the primary metric, scale, and direction before broad tuning
--> tune only promising methods to estimate their current-project ceiling
--> USER L2: promote problem + core mechanism + innovation claim
+-> screen clusters; tune only promising ones; change problem when exhausted
+-> USER L2: promote problem + method cluster + core mechanism + innovation
 -> complete the L1 evidence standard
 -> clear the canonical G3 matched-baseline gain floor
 -> generate the paper-decision report
@@ -43,7 +44,7 @@ The user decides:
 
 - confirmation or change of the venue/submission window and research domain;
 - L1 task-dataset direction and its evidence standard;
-- L2 problem, core mechanism, and innovation claim;
+- confirmed L2 problem, method cluster, core mechanism, and innovation claim;
 - any additional explicitly frozen project choice;
 - semantic changes to stable project instructions;
 - paid compute or rental;
@@ -56,7 +57,11 @@ The agent may scout candidates, inspect data, reproduce baselines, run cheap
 screens, tune promising methods, repair code, and close low-potential branches
 within the confirmed direction. Metrics, hyperparameters, implementation
 choices, and routine debugging do not need approval. Notify model-family
-changes and any implementation repair that changes scientific meaning.
+changes, every scientific problem or method-cluster switch, and any
+implementation repair that changes scientific meaning. Before L2 confirmation,
+problem/method-cluster switches inside confirmed L1 are notification-only;
+replacing an already confirmed L2 selection still requires a scoped user
+decision. Resolve engineering problems autonomously in L3.
 
 Silence or a 20-minute timeout grants no authority. Record direct user decisions
 even when no question was queued. A newer decision for the same target
@@ -67,6 +72,13 @@ supersedes every older unconsumed approval.
 - L1 and L2 are durable, selective scientific state. Preserve current facts,
   decision-relevant evidence, user decisions, and material replacements—not
   every attempt.
+- L2 follows nearest-work cluster -> unresolved paper-grade problem ->
+  problem-linked method cluster -> falsifiable prediction -> representative
+  evidence. If credible clusters fail, choose another problem rather than
+  accumulating engineering patches.
+- Expert weighted voting, heuristic fusion, module stacking, threshold tricks,
+  and similar combinations may be L3 tools or baselines, not the L2 problem,
+  core mechanism, or innovation.
 - L3 is agent/project-managed. Keep or discard logs, failed runs, tuning traces,
   and stop notes according to current utility and project rules. Never delete
   existing artifacts merely because this skill would not have required them.
@@ -84,9 +96,13 @@ supersedes every older unconsumed approval.
   another dataset. Keep them separate from internal variants.
 - Maintain a dataset-indexed external-baseline row for every adopted dataset:
   identify the strongest recent top-conference protocol-match found for that
-  dataset, keep its venue/year/source/search scope, and compare our method with
-  that dataset's own baseline. Never carry one dataset's score or comparator
-  across to another dataset.
+  dataset and keep its venue/year/source/search scope. Each row explicitly
+  records protocol status and coverage or a concrete blocker for the dataset
+  paper, recent top-conference comparator, a different published mechanism, and
+  a strong simple baseline. Rows may be `IDENTIFIED` or `BLOCKED` during
+  exploration; every row must be `MATCHED` and its protocol status must be
+  `VERIFIED_MATCH` at G3.
+  Never carry one dataset's score or comparator across to another dataset.
 - Before broad tuning, the agent must lock the higher-is-better primary metric,
   its `0–1` or `0–100` scale, and its direction in the controller. This is an
   agent-owned protocol anchor, not a new PI question. Replacing it invalidates
@@ -150,19 +166,25 @@ broad tuning require confirmed L1. Changing L1 requires a new scoped decision.
 
 ### L2 scientific story
 
-Inside L1, map current primary literature and real external baselines, diagnose
-one concrete failure, derive a problem-to-intuition-to-mathematics mechanism,
-run a falsifiable screen, and tune only promising candidates. After a ceiling
-summary and external comparison exist, ask whether to promote the problem,
-core mechanism, and innovation claim.
+Inside L1, cluster current primary literature by the unresolved problem; build a
+small paper-grade problem portfolio; maintain a source-checked external-baseline
+roster for every adopted dataset; and organize solutions as problem-linked
+method clusters with a shared intuition, mathematics, and falsifiable
+prediction. Screen a representative minimal method, tune only promising
+clusters, and move to another problem when credible clusters are exhausted.
+Notify each problem/method-cluster switch with the previous and new stable IDs.
+After a ceiling summary and external
+comparison exist, ask whether to promote the problem, method cluster, core
+mechanism, and innovation claim.
 
-Before broad ceiling tuning, record the agent-owned evaluation anchor. Changing
+Before broad ceiling tuning, record the full adopted-dataset baseline roster,
+then the agent-owned evaluation anchor. Changing
 the metric name, scale, or direction later does not require PI approval, but the
 old anchor's results cannot directly satisfy the paper gate.
 
-L2 must link resolvable nearest-work, external-baseline, and result evidence.
-Its baseline record maintains one row per adopted dataset and keeps the external
-comparator and our matched result together.
+L2 must link resolvable problem-portfolio, nearest-work, external-baseline, and
+result evidence. Its baseline record maintains one row per adopted dataset and
+keeps the external comparator and our matched result together.
 The best internal variant never becomes the story automatically. Changing L2
 requires a new scoped decision.
 
@@ -199,11 +221,12 @@ controller receipt needed to prove that the project-specific risk was accepted.
 
 Before broad ceiling tuning, source-check the external comparison roster and
 ensure a plausible path to competitiveness. Prefer one testable mechanism over
-an engineering-heavy stack. Use available GPU compute by default; use CPU or
+an engineering-heavy stack. Keep runtime, data plumbing, hyperparameters,
+ordinary bugs, and implementation repairs in L3. Use available GPU compute by default; use CPU or
 no-GPU mode when requested or required. Never rent paid compute without a user
 decision.
 
-For a promising method, report its starting and best result, matched-baseline
+For a promising method cluster, report its starting and best result, matched-baseline
 gap, stability, cost, weakness, and paper potential in plain language. Close a
 well-checked low-potential branch autonomously and notify only when the closure
 changes project-level interpretation or a confirmed choice.
@@ -228,9 +251,12 @@ host supports scheduled
 tasks, use a scheduled task only as a state-aware wakeup: choose the next
 meaningful check time from job progress or the 20-minute question window, read
 `status STATE --compact` first, compare `wakeup_changed_since_ack`, and compare
-the current job/result artifact fingerprint with the stored acknowledged one.
+each current job/result artifact fingerprint with that job's entry in
+`acknowledged_artifact_fingerprints`.
 Avoid loading the full scientific state or reasoning when neither changed.
-After successfully processing a change, persist both with `monitor-ack`; do not
+After successfully processing a change, persist it with
+`monitor-ack --job-id JOB --artifact-fingerprint VALUE`; omission preserves
+other jobs and explicit clearing affects only the named job. Do not
 acknowledge before the resulting state is safely recorded. If processing
 changed workflow state, read compact status again and acknowledge the new
 fingerprint, not the pre-processing one. A mere reschedule
@@ -270,7 +296,8 @@ judge scientific adequacy or grant permission.
 
 ## Reporting and handoff
 
-Lead with the active L1 direction/evidence standard, active L2 story/external
+Lead with the active L1 direction/evidence standard, active L2
+problem/method-cluster story and external
 comparison, and only the L3 issue that changes their meaning. Separate verified
 facts, agent interpretation, notifications, PI questions, and confirmed user
 decisions. Explain changes as: intended action, actual result, why it matters,

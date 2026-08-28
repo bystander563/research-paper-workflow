@@ -25,12 +25,13 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 11
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+SCHEMA_VERSION = 13
+SUPPORTED_SCHEMA_VERSIONS = set(range(1, SCHEMA_VERSION + 1))
 MIN_PAPER_READY_GAIN_POINTS = 1.0
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
 RECENT_INSTRUCTION_UPDATE_LIMIT = 20
+RECENT_INVALIDATED_PAPER_LIMIT = 20
 ROOT_AGENTS_TARGET_BYTES = 8 * 1024
 ROOT_AGENTS_REVIEW_BYTES = 12 * 1024
 EFFECTIVE_AGENTS_TARGET_BYTES = 16 * 1024
@@ -55,6 +56,8 @@ CHECKPOINT_LAYER_FIELDS = {
     "direction": {
         "task_type",
         "dataset",
+        "primary_dataset",
+        "supporting_dataset",
         "unexposed_dataset_search",
         "competitive_bar",
         "novelty_sufficiency",
@@ -64,14 +67,22 @@ CHECKPOINT_LAYER_FIELDS = {
     },
     "science": {
         "direction_id",
+        "problem_id",
+        "method_cluster_id",
         "problem",
+        "nearest_work_gap",
+        "paper_grade_rationale",
         "core_mechanism",
+        "falsifiable_prediction",
+        "contribution_type",
         "innovation_claim",
         "external_baseline_status",
         "ceiling_summary",
+        "problem_portfolio_record",
         "nearest_work_record",
         "baseline_record",
         "result_record",
+        "change_notification",
     },
     "paper": {"science_id", "headline_claim", "handoff_target"},
 }
@@ -88,6 +99,60 @@ VALID_PHASES = {
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 JOB_STATUSES = ACTIVE_JOB_STATUSES | {"completed", "failed", "cancelled", "blocked"}
 METRIC_DIRECTIONS = {"higher_is_better"}
+BASELINE_ROSTER_STATUSES = {"IDENTIFIED", "BLOCKED", "MATCHED"}
+BASELINE_PROTOCOL_STATUSES = {
+    "BLOCKED",
+    "PENDING_MATCH",
+    "VERIFIED_MATCH",
+}
+LEGACY_BASELINE_PROTOCOL_STATUS = "LEGACY_UNVERIFIED"
+PROTOCOL_MISMATCH_PATTERNS = {
+    "different split",
+    "mismatched",
+    "not comparable",
+    "not matched",
+    "unmatched",
+    "不可比",
+    "不匹配",
+    "不同划分",
+}
+BASELINE_COMPARISON_ROLES = (
+    "dataset_origin",
+    "recent_top_conference",
+    "different_published_mechanism",
+    "strong_simple",
+)
+BASELINE_ROLE_STATUSES = {"COVERED", "BLOCKED"}
+LEGACY_BASELINE_ROLE_STATUS = "LEGACY_UNVERIFIED"
+PAPER_GRADE_CONTRIBUTION_TYPES = {
+    "diagnostic",
+    "empirical_finding",
+    "estimand",
+    "mechanism",
+    "objective",
+    "theory",
+}
+ENGINEERING_ONLY_CORE_PATTERNS = {
+    "expert weighted voting",
+    "heuristic fusion",
+    "module stacking",
+    "threshold tuning",
+    "weighted expert voting",
+    "weighted voting",
+    "专家加权投票",
+    "专家投票",
+    "启发式融合",
+    "模块堆叠",
+    "调阈值",
+}
+NOTIFICATION_KINDS = {
+    "general",
+    "job_event",
+    "l3_scientific_impact",
+    "method_cluster_switch",
+    "model_family_change",
+    "problem_switch",
+}
 SEED_SELECTION_RISK_TARGET_PREFIX = "paper:seed-selection-risk:"
 PAPER_ASSESSMENT_TEXT_FIELDS = (
     "competitive_bar_assessment",
@@ -121,9 +186,14 @@ PAPER_ASSESSMENT_CLI_FIELDS = (
 PAPER_ASSESSMENT_CONTEXT_FIELDS = (
     "current_task",
     "dataset",
+    "adopted_datasets",
     "current_work_problem",
+    "problem_id",
+    "method_cluster_id",
     "innovation",
     "core_mechanism",
+    "baseline_roster_revision",
+    "baseline_roster_payload_sha256",
     "minimum_paper_gain_points",
     "improvement_points",
     "evaluation_anchor_revision",
@@ -295,6 +365,8 @@ DATASET_BASELINE_FIELDS = (
     "source",
     "search_scope",
     "protocol_match",
+    "protocol_status",
+    "comparison_roles",
     "metric",
     "metric_scale",
     "baseline_score",
@@ -303,7 +375,78 @@ DATASET_BASELINE_FIELDS = (
 )
 
 
-def parse_dataset_baseline_matrix(raw: Any) -> list[dict[str, Any]]:
+def add_legacy_baseline_metadata(rows: Any) -> Any:
+    """Make pre-v13 rows readable without treating missing evidence as verified."""
+    if not isinstance(rows, list):
+        return rows
+    upgraded: list[Any] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            upgraded.append(raw)
+            continue
+        entry = dict(raw)
+        entry.setdefault("protocol_status", LEGACY_BASELINE_PROTOCOL_STATUS)
+        entry.setdefault(
+            "comparison_roles",
+            {
+                role: {
+                    "status": LEGACY_BASELINE_ROLE_STATUS,
+                    "evidence": "Not structurally recorded before schema v13",
+                }
+                for role in BASELINE_COMPARISON_ROLES
+            },
+        )
+        upgraded.append(entry)
+    return upgraded
+
+
+def normalize_adopted_datasets(
+    primary_dataset: Any, supporting_datasets: Any
+) -> list[dict[str, str]]:
+    primary = clean_text(primary_dataset, "--primary-dataset")
+    raw_supporting = supporting_datasets or []
+    if not isinstance(raw_supporting, list):
+        raise SystemExit("--supporting-dataset values must form a list")
+    normalized = [{"dataset": primary, "role": "primary"}]
+    seen = {primary}
+    for index, raw in enumerate(raw_supporting, start=1):
+        dataset = clean_text(raw, f"--supporting-dataset #{index}")
+        if dataset in seen:
+            raise SystemExit(f"Adopted dataset is repeated: {dataset!r}")
+        seen.add(dataset)
+        normalized.append({"dataset": dataset, "role": "supporting"})
+    return normalized
+
+
+def adopted_datasets_complete(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    try:
+        primary = [item for item in value if item.get("role") == "primary"]
+        if len(primary) != 1:
+            return False
+        normalized = normalize_adopted_datasets(
+            primary[0].get("dataset"),
+            [item.get("dataset") for item in value if item.get("role") == "supporting"],
+        )
+    except (AttributeError, SystemExit):
+        return False
+    return normalized == value
+
+
+def validate_metric_score(metric_scale: str, value: Any, label: str) -> float:
+    if not finite_number(value):
+        raise SystemExit(f"{label} must be a finite number")
+    score = float(value)
+    upper = 1.0 if metric_scale == "unit_interval" else 100.0
+    if not 0.0 <= score <= upper:
+        raise SystemExit(f"{label} must be between 0 and {upper:g} inclusive")
+    return score
+
+
+def parse_dataset_baseline_matrix(
+    raw: Any, *, require_matched: bool = True, allow_legacy_metadata: bool = False
+) -> list[dict[str, Any]]:
     if not nonblank(raw):
         raise SystemExit(
             "--dataset-baseline-matrix requires a JSON array with one external-baseline comparison per adopted dataset"
@@ -324,7 +467,7 @@ def parse_dataset_baseline_matrix(raw: Any) -> list[dict[str, Any]]:
             for field in DATASET_BASELINE_FIELDS
             if field not in raw_entry
             or (
-                field not in {"baseline_score", "our_score"}
+                field not in {"baseline_score", "our_score", "comparison_roles"}
                 and not nonblank(raw_entry.get(field))
             )
         ]
@@ -335,7 +478,7 @@ def parse_dataset_baseline_matrix(raw: Any) -> list[dict[str, Any]]:
         entry = {
             field: (
                 raw_entry[field]
-                if field in {"baseline_score", "our_score"}
+                if field in {"baseline_score", "our_score", "comparison_roles"}
                 else str(raw_entry[field]).strip()
             )
             for field in DATASET_BASELINE_FIELDS
@@ -349,21 +492,233 @@ def parse_dataset_baseline_matrix(raw: Any) -> list[dict[str, Any]]:
             raise SystemExit(
                 f"Dataset-baseline row {index} role must be primary or supporting"
             )
-        if entry["status"] != "MATCHED":
+        if entry["status"] not in BASELINE_ROSTER_STATUSES:
+            raise SystemExit(
+                f"Dataset-baseline row {index} status must be one of "
+                + ", ".join(sorted(BASELINE_ROSTER_STATUSES))
+            )
+        allowed_protocol_statuses = set(BASELINE_PROTOCOL_STATUSES)
+        if allow_legacy_metadata:
+            allowed_protocol_statuses.add(LEGACY_BASELINE_PROTOCOL_STATUS)
+        if entry["protocol_status"] not in allowed_protocol_statuses:
+            raise SystemExit(
+                f"Dataset-baseline row {index} protocol_status must be one of "
+                + ", ".join(sorted(allowed_protocol_statuses))
+            )
+        comparison_roles = entry["comparison_roles"]
+        if not isinstance(comparison_roles, dict) or set(comparison_roles) != set(
+            BASELINE_COMPARISON_ROLES
+        ):
+            raise SystemExit(
+                f"Dataset-baseline row {index} comparison_roles must contain exactly: "
+                + ", ".join(BASELINE_COMPARISON_ROLES)
+            )
+        normalized_roles: dict[str, dict[str, str]] = {}
+        for role in BASELINE_COMPARISON_ROLES:
+            role_entry = comparison_roles.get(role)
+            if not isinstance(role_entry, dict):
+                raise SystemExit(
+                    f"Dataset-baseline row {index} comparison role {role!r} "
+                    "must be an object"
+                )
+            role_status = str(role_entry.get("status") or "").strip()
+            evidence = str(role_entry.get("evidence") or "").strip()
+            allowed_role_statuses = set(BASELINE_ROLE_STATUSES)
+            if allow_legacy_metadata:
+                allowed_role_statuses.add(LEGACY_BASELINE_ROLE_STATUS)
+            if role_status not in allowed_role_statuses:
+                raise SystemExit(
+                    f"Dataset-baseline row {index} comparison role {role!r} "
+                    "status must be one of "
+                    + ", ".join(sorted(allowed_role_statuses))
+                )
+            if not evidence:
+                raise SystemExit(
+                    f"Dataset-baseline row {index} comparison role {role!r} "
+                    "requires source evidence or a concrete blocker"
+                )
+            normalized_roles[role] = {
+                "status": role_status,
+                "evidence": evidence,
+            }
+        entry["comparison_roles"] = normalized_roles
+        protocol_status = entry["protocol_status"]
+        if protocol_status == "VERIFIED_MATCH":
+            normalized_protocol_text = entry["protocol_match"].casefold()
+            contradiction = next(
+                (
+                    pattern
+                    for pattern in sorted(PROTOCOL_MISMATCH_PATTERNS)
+                    if pattern.casefold() in normalized_protocol_text
+                ),
+                None,
+            )
+            if contradiction is not None:
+                raise SystemExit(
+                    f"Dataset-baseline row {index} claims VERIFIED_MATCH but its "
+                    f"protocol evidence says {contradiction!r}"
+                )
+        if entry["status"] == "MATCHED" and protocol_status != "VERIFIED_MATCH":
+            if not (
+                allow_legacy_metadata
+                and protocol_status == LEGACY_BASELINE_PROTOCOL_STATUS
+            ):
+                raise SystemExit(
+                    f"Dataset-baseline row {index} marked MATCHED requires "
+                    "protocol_status VERIFIED_MATCH"
+                )
+        if entry["status"] == "BLOCKED" and protocol_status != "BLOCKED":
+            if not (
+                allow_legacy_metadata
+                and protocol_status == LEGACY_BASELINE_PROTOCOL_STATUS
+            ):
+                raise SystemExit(
+                    f"Dataset-baseline row {index} marked BLOCKED requires "
+                    "protocol_status BLOCKED"
+                )
+        if entry["status"] == "IDENTIFIED" and protocol_status not in {
+            "PENDING_MATCH",
+            "VERIFIED_MATCH",
+        }:
+            if not (
+                allow_legacy_metadata
+                and protocol_status == LEGACY_BASELINE_PROTOCOL_STATUS
+            ):
+                raise SystemExit(
+                    f"Dataset-baseline row {index} marked IDENTIFIED requires "
+                    "protocol_status PENDING_MATCH or VERIFIED_MATCH"
+                )
+        if require_matched and entry["status"] != "MATCHED":
             raise SystemExit(
                 f"Dataset-baseline row {index} must be MATCHED before the paper gate"
             )
+        if require_matched and entry["protocol_status"] != "VERIFIED_MATCH":
+            if not (
+                allow_legacy_metadata
+                and entry["protocol_status"] == LEGACY_BASELINE_PROTOCOL_STATUS
+            ):
+                raise SystemExit(
+                    f"Dataset-baseline row {index} must have VERIFIED_MATCH protocol "
+                    "status before the paper gate"
+                )
+        if require_matched and normalized_roles["recent_top_conference"][
+            "status"
+        ] != "COVERED":
+            if not (
+                allow_legacy_metadata
+                and normalized_roles["recent_top_conference"]["status"]
+                == LEGACY_BASELINE_ROLE_STATUS
+            ):
+                raise SystemExit(
+                    f"Dataset-baseline row {index} must cover the recent top-conference "
+                    "comparison before the paper gate"
+                )
         if entry["metric_scale"] not in {"unit_interval", "percentage"}:
             raise SystemExit(
                 f"Dataset-baseline row {index} metric_scale must be unit_interval or percentage"
             )
-        calculate_improvement_points(
-            entry["metric_scale"], entry["baseline_score"], entry["our_score"]
-        )
+        baseline_score = entry["baseline_score"]
+        our_score = entry["our_score"]
+        if entry["status"] == "MATCHED":
+            calculate_improvement_points(entry["metric_scale"], baseline_score, our_score)
+            entry["baseline_score"] = float(baseline_score)
+            entry["our_score"] = float(our_score)
+        else:
+            entry["baseline_score"] = (
+                None
+                if baseline_score is None
+                else validate_metric_score(
+                    entry["metric_scale"], baseline_score, f"row {index} baseline_score"
+                )
+            )
+            entry["our_score"] = (
+                None
+                if our_score is None
+                else validate_metric_score(
+                    entry["metric_scale"], our_score, f"row {index} our_score"
+                )
+            )
         normalized.append(entry)
     if sum(entry["role"] == "primary" for entry in normalized) != 1:
         raise SystemExit("Dataset-baseline matrix must contain exactly one primary row")
     return normalized
+
+
+def baseline_rows_cover_adopted_datasets(
+    rows: Any, adopted_datasets: Any
+) -> bool:
+    if not isinstance(rows, list) or not adopted_datasets_complete(adopted_datasets):
+        return False
+    expected = {
+        (item["dataset"], item["role"]) for item in adopted_datasets
+    }
+    actual = {
+        (item.get("dataset"), item.get("role"))
+        for item in rows
+        if isinstance(item, dict)
+    }
+    return len(rows) == len(expected) and actual == expected
+
+
+def baseline_roster_payload_sha256(roster: dict[str, Any]) -> str:
+    return canonical_payload_sha256(
+        {
+            "direction_id": roster.get("direction_id"),
+            "revision": roster.get("revision"),
+            "rows": roster.get("rows"),
+        }
+    )
+
+
+def baseline_roster_usable(state: dict[str, Any], *, require_matched: bool = False) -> bool:
+    roster = state.get("dataset_baseline_roster")
+    direction = state.get("layer_checkpoints", {}).get("direction", {})
+    direction_payload = direction.get("payload") or {}
+    if not isinstance(roster, dict) or direction.get("status") != "CONFIRMED_BY_PI":
+        return False
+    if roster.get("schema_v13_review_required"):
+        return False
+    if roster.get("direction_id") != direction.get("id"):
+        return False
+    if not isinstance(roster.get("revision"), int) or roster["revision"] < 1:
+        return False
+    if roster.get("payload_sha256") != baseline_roster_payload_sha256(roster):
+        return False
+    try:
+        rows = parse_dataset_baseline_matrix(
+            json.dumps(roster.get("rows"), ensure_ascii=False),
+            require_matched=require_matched,
+        )
+    except SystemExit:
+        return False
+    return baseline_rows_cover_adopted_datasets(
+        rows, direction_payload.get("adopted_datasets")
+    )
+
+
+def baseline_roster_record_usable(state_path: Path, state: dict[str, Any]) -> bool:
+    roster = state.get("dataset_baseline_roster") or {}
+    record = resolve_stored_path(state_path, roster.get("record_path"))
+    receipt_hash = roster.get("record_sha256_at_receipt")
+    if not (
+        record
+        and record.is_file()
+        and stored_path_is_project_local(state_path, roster.get("record_path"))
+        and nonblank(receipt_hash)
+    ):
+        return False
+    if roster.get("record_kind") == "legacy_paper_assessment":
+        return sha256_file(record) == receipt_hash
+    if roster.get("record_kind") != "baseline_roster_receipt":
+        return False
+    try:
+        text = record.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return False
+    return bool(
+        "## Dataset baseline roster receipt" in text
+        and f"`{roster.get('payload_sha256')}`" in text
+    )
 
 
 def dataset_baseline_matrix_complete(assessment: dict[str, Any]) -> bool:
@@ -378,6 +733,10 @@ def dataset_baseline_matrix_complete(assessment: dict[str, Any]) -> bool:
         return False
     primary = [entry for entry in normalized if entry["role"] == "primary"]
     if len(primary) != 1:
+        return False
+    if not baseline_rows_cover_adopted_datasets(
+        normalized, assessment.get("adopted_datasets")
+    ):
         return False
     row = primary[0]
     return bool(
@@ -466,10 +825,19 @@ def paper_assessment_complete(assessment: Any) -> bool:
             "current_task",
             "dataset",
             "current_work_problem",
+            "problem_id",
+            "method_cluster_id",
             "innovation",
             "core_mechanism",
+            "baseline_roster_payload_sha256",
         )
     ):
+        return False
+    if not adopted_datasets_complete(assessment.get("adopted_datasets")):
+        return False
+    if not isinstance(assessment.get("baseline_roster_revision"), int) or assessment[
+        "baseline_roster_revision"
+    ] < 1:
         return False
     try:
         calculated = calculate_improvement_points(
@@ -554,6 +922,15 @@ def empty_instruction_maintenance() -> dict[str, Any]:
     }
 
 
+def empty_monitoring() -> dict[str, Any]:
+    return {
+        "last_acknowledged_wakeup_fingerprint": None,
+        "artifact_fingerprints_by_job": {},
+        "legacy_unscoped_artifact_fingerprint": None,
+        "acknowledged_at": None,
+    }
+
+
 def initial_state(project: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -563,11 +940,7 @@ def initial_state(project: str) -> dict[str, Any]:
         "paused_for_pi": False,
         "manual_pause": None,
         "last_manual_pause_event": None,
-        "monitoring": {
-            "last_acknowledged_wakeup_fingerprint": None,
-            "last_acknowledged_artifact_fingerprint": None,
-            "acknowledged_at": None,
-        },
+        "monitoring": empty_monitoring(),
         "frozen_by_pi": {},
         "frozen_history": [],
         "layer_checkpoints": {
@@ -576,8 +949,12 @@ def initial_state(project: str) -> dict[str, Any]:
         "checkpoint_history": [],
         "evaluation_anchor": None,
         "evaluation_anchor_history": [],
+        "dataset_baseline_roster": None,
+        "dataset_baseline_roster_history": [],
         "seed_selection_risk_acceptance": None,
         "paper_ready_assessment": None,
+        "invalidated_paper_assessments": [],
+        "invalidated_paper_assessment_count": 0,
         "macro_questions": [],
         "decision_target_revisions": {},
         "notifications": [],
@@ -592,6 +969,54 @@ def initial_state(project: str) -> dict[str, Any]:
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
+
+
+def archive_invalidated_paper_assessment(
+    state: dict[str, Any], reason: str, replacement_id: str | None = None
+) -> None:
+    assessment = state.get("paper_ready_assessment")
+    if not isinstance(assessment, dict):
+        state["paper_ready_assessment"] = None
+        state["seed_selection_risk_acceptance"] = None
+        return
+    history = state.setdefault("invalidated_paper_assessments", [])
+    history.append(
+        {
+            "path": assessment.get("path"),
+            "sha256_at_gate": assessment.get("sha256_at_gate"),
+            "payload_sha256_at_gate": assessment.get("payload_sha256_at_gate"),
+            "direction_id": assessment.get("direction_id"),
+            "science_id": assessment.get("science_id"),
+            "recorded_at": assessment.get("recorded_at"),
+            "invalidated_at": now_iso(),
+            "reason": reason,
+            "replacement_id": replacement_id,
+        }
+    )
+    if len(history) > RECENT_INVALIDATED_PAPER_LIMIT:
+        overflow = len(history) - RECENT_INVALIDATED_PAPER_LIMIT
+        del history[:overflow]
+        state["invalidated_paper_assessment_count"] = int(
+            state.get("invalidated_paper_assessment_count") or 0
+        ) + overflow
+    state["paper_ready_assessment"] = None
+    state["seed_selection_risk_acceptance"] = None
+
+
+def invalidate_baseline_roster(
+    state: dict[str, Any], reason: str, replacement_id: str
+) -> None:
+    roster = state.get("dataset_baseline_roster")
+    if isinstance(roster, dict):
+        state.setdefault("dataset_baseline_roster_history", []).append(
+            {
+                **roster,
+                "invalidated_at": now_iso(),
+                "invalidated_by": reason,
+                "replacement_id": replacement_id,
+            }
+        )
+    state["dataset_baseline_roster"] = None
 
 
 def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
@@ -791,8 +1216,11 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
             # A pre-v11 paper packet did not prove per-dataset external-baseline
             # coverage. Preserve the project direction and science, but make the
             # paper packet ineligible until it is rebuilt.
-            state["paper_ready_assessment"] = None
-            state["seed_selection_risk_acceptance"] = None
+            archive_invalidated_paper_assessment(
+                state,
+                "schema_v11_dataset_baseline_reassessment",
+                "schema-v11-dataset-baseline-reassessment",
+            )
             if state.get("phase") in {"paper_ready_pending_pi", "paper_handoff_approved"}:
                 state["phase"] = "confirmed_project"
             paper = state.setdefault("layer_checkpoints", {}).setdefault(
@@ -805,6 +1233,149 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
                         "previous": paper,
                         "replacement_id": "schema-v11-dataset-baseline-reassessment",
                         "decision_source": {"type": "schema_v11_migration"},
+                        "created_at": now_iso(),
+                    }
+                )
+                state["layer_checkpoints"]["paper"] = empty_checkpoint()
+    if version in set(range(1, 12)):
+        state.setdefault("dataset_baseline_roster_history", [])
+        state.setdefault("invalidated_paper_assessments", [])
+        state.setdefault("invalidated_paper_assessment_count", 0)
+
+        legacy_monitoring = state.get("monitoring") or {}
+        legacy_artifact = legacy_monitoring.get(
+            "last_acknowledged_artifact_fingerprint"
+        )
+        state["monitoring"] = {
+            "last_acknowledged_wakeup_fingerprint": legacy_monitoring.get(
+                "last_acknowledged_wakeup_fingerprint"
+            ),
+            "artifact_fingerprints_by_job": {},
+            "legacy_unscoped_artifact_fingerprint": legacy_artifact,
+            "acknowledged_at": legacy_monitoring.get("acknowledged_at"),
+        }
+
+        direction = state.setdefault("layer_checkpoints", {}).setdefault(
+            "direction", empty_checkpoint()
+        )
+        direction_payload = direction.get("payload") or {}
+        assessment = state.get("paper_ready_assessment")
+        migrated_rows = None
+        if isinstance(assessment, dict) and isinstance(
+            assessment.get("dataset_baseline_matrix"), list
+        ):
+            try:
+                migrated_rows = parse_dataset_baseline_matrix(
+                    json.dumps(
+                        add_legacy_baseline_metadata(
+                            assessment["dataset_baseline_matrix"]
+                        ),
+                        ensure_ascii=False,
+                    ),
+                    allow_legacy_metadata=True,
+                )
+                migrated_rows = [
+                    row for row in migrated_rows if row["role"] == "primary"
+                ] + [row for row in migrated_rows if row["role"] == "supporting"]
+            except SystemExit:
+                migrated_rows = None
+        if direction.get("status") == "CONFIRMED_BY_PI":
+            if migrated_rows:
+                direction_payload["adopted_datasets"] = [
+                    {"dataset": row["dataset"], "role": row["role"]}
+                    for row in migrated_rows
+                ]
+                direction["payload"] = direction_payload
+            elif not adopted_datasets_complete(
+                direction_payload.get("adopted_datasets")
+            ):
+                direction["status"] = "LEGACY_CONFIRMED_NEEDS_DATASET_INVENTORY"
+
+        if migrated_rows and direction.get("id"):
+            roster = {
+                "direction_id": direction.get("id"),
+                "revision": 1,
+                "rows": migrated_rows,
+                "reason": "Migrated from the schema-v11 locked paper assessment",
+                "recorded_at": assessment.get("recorded_at") if assessment else now_iso(),
+                "record_path": assessment.get("path") if assessment else None,
+                "record_kind": "legacy_paper_assessment",
+                "record_sha256_at_receipt": (
+                    assessment.get("sha256_after_handoff")
+                    or assessment.get("sha256_at_gate")
+                    if assessment
+                    else None
+                ),
+            }
+            roster["payload_sha256"] = baseline_roster_payload_sha256(roster)
+            state["dataset_baseline_roster"] = roster
+        else:
+            state.setdefault("dataset_baseline_roster", None)
+
+        science = state["layer_checkpoints"].setdefault("science", empty_checkpoint())
+        if science.get("status") == "CONFIRMED_BY_PI":
+            science["status"] = "LEGACY_CONFIRMED_NEEDS_PROBLEM_STRUCTURE"
+            if isinstance(state.get("paper_ready_assessment"), dict):
+                archive_invalidated_paper_assessment(
+                    state,
+                    "schema_v12_problem_method_structure_required",
+                    "schema-v12-problem-method-reassessment",
+                )
+                if state.get("phase") in {
+                    "paper_ready_pending_pi",
+                    "paper_handoff_approved",
+                }:
+                    state["phase"] = "confirmed_project"
+                paper = state["layer_checkpoints"].setdefault(
+                    "paper", empty_checkpoint()
+                )
+                if paper.get("status") != "UNSET":
+                    state.setdefault("checkpoint_history", []).append(
+                        {
+                            "layer": "paper",
+                            "previous": paper,
+                            "replacement_id": "schema-v12-problem-method-reassessment",
+                            "decision_source": {"type": "schema_v12_migration"},
+                            "created_at": now_iso(),
+                        }
+                    )
+                    state["layer_checkpoints"]["paper"] = empty_checkpoint()
+    if version in set(range(1, 13)):
+        roster = state.get("dataset_baseline_roster")
+        if isinstance(roster, dict) and isinstance(roster.get("rows"), list):
+            previous_roster = dict(roster)
+            roster["rows"] = add_legacy_baseline_metadata(roster["rows"])
+            roster["payload_sha256"] = baseline_roster_payload_sha256(roster)
+            roster["schema_v13_review_required"] = True
+            state.setdefault("dataset_baseline_roster_history", []).append(
+                {
+                    **previous_roster,
+                    "invalidated_at": now_iso(),
+                    "invalidated_by": "schema_v13_baseline_evidence_upgrade",
+                    "replacement_id": "schema-v13-baseline-evidence-review",
+                }
+            )
+        if version == 12 and isinstance(state.get("paper_ready_assessment"), dict):
+            archive_invalidated_paper_assessment(
+                state,
+                "schema_v13_baseline_evidence_upgrade",
+                "schema-v13-baseline-evidence-review",
+            )
+            if state.get("phase") in {
+                "paper_ready_pending_pi",
+                "paper_handoff_approved",
+            }:
+                state["phase"] = "confirmed_project"
+            paper = state.setdefault("layer_checkpoints", {}).setdefault(
+                "paper", empty_checkpoint()
+            )
+            if paper.get("status") != "UNSET":
+                state.setdefault("checkpoint_history", []).append(
+                    {
+                        "layer": "paper",
+                        "previous": paper,
+                        "replacement_id": "schema-v13-baseline-evidence-review",
+                        "decision_source": {"type": "schema_v13_migration"},
                         "created_at": now_iso(),
                     }
                 )
@@ -835,12 +1406,14 @@ def load_state(path: Path) -> dict[str, Any]:
         "layer_checkpoints": dict,
         "checkpoint_history": list,
         "evaluation_anchor_history": list,
+        "dataset_baseline_roster_history": list,
         "macro_questions": list,
         "decision_target_revisions": dict,
         "notifications": list,
         "instruction_maintenance": dict,
         "jobs": list,
         "monitoring": dict,
+        "invalidated_paper_assessments": list,
     }
     for key, expected_type in required_types.items():
         if not isinstance(state.get(key), expected_type):
@@ -851,6 +1424,15 @@ def load_state(path: Path) -> dict[str, Any]:
         state.get("evaluation_anchor"), dict
     ):
         raise SystemExit("Invalid evaluation_anchor: expected an object or null")
+    if state.get("dataset_baseline_roster") is not None and not isinstance(
+        state.get("dataset_baseline_roster"), dict
+    ):
+        raise SystemExit("Invalid dataset_baseline_roster: expected an object or null")
+    monitoring = state.get("monitoring") or {}
+    if not isinstance(monitoring.get("artifact_fingerprints_by_job"), dict):
+        raise SystemExit(
+            "Invalid monitoring.artifact_fingerprints_by_job: expected an object"
+        )
     if state.get("seed_selection_risk_acceptance") is not None and not isinstance(
         state.get("seed_selection_risk_acceptance"), dict
     ):
@@ -1224,12 +1806,23 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         f"- Recorded at: {now_iso()}\n"
         f"- Current task: {payload['current_task']}\n"
         f"- Dataset: {payload['dataset']}\n"
+        "- Adopted datasets: "
+        + ", ".join(
+            f"{item['dataset']} ({item['role']})"
+            for item in payload["adopted_datasets"]
+        )
+        + "\n"
         f"- Problem in current work: {payload['current_work_problem']}\n"
+        f"- Problem ID: `{payload['problem_id']}`\n"
+        f"- Method-cluster ID: `{payload['method_cluster_id']}`\n"
         f"- Innovation: {payload['innovation']}\n"
         f"- Core mechanism: {payload['core_mechanism']}\n"
         f"- Concrete method: {payload['specific_method']}\n"
         f"- Final results: {payload['final_results']}\n"
         f"- Primary comparison dataset: {payload['primary_comparison_dataset']}\n"
+        "- Baseline roster: revision "
+        f"{payload['baseline_roster_revision']} | payload "
+        f"`{payload['baseline_roster_payload_sha256']}`\n"
         "- Per-dataset external-baseline comparisons:\n\n"
         "```json\n"
         + json.dumps(
@@ -1273,6 +1866,24 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         "- Structured assessment:\n\n"
         "```json\n"
         + json.dumps(public_payload, ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n```\n"
+    )
+    with record.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(receipt)
+
+
+def append_baseline_roster_receipt(
+    record: Path, roster: dict[str, Any], reason: str
+) -> None:
+    receipt = (
+        "\n\n## Dataset baseline roster receipt\n\n"
+        f"- Recorded at: {roster['recorded_at']}\n"
+        f"- Direction: `{roster['direction_id']}`\n"
+        f"- Revision: `{roster['revision']}`\n"
+        f"- Reason: {reason}\n"
+        f"- Payload SHA-256: `{roster['payload_sha256']}`\n\n"
+        "```json\n"
+        + json.dumps(roster["rows"], ensure_ascii=False, indent=2, sort_keys=True)
         + "\n```\n"
     )
     with record.open("a", encoding="utf-8", newline="") as handle:
@@ -1344,9 +1955,14 @@ def replace_science_current_block(text: str, body: str) -> str:
 
 def l1_context_body(direction_id: str, payload: dict[str, Any]) -> str:
     standard = payload["evidence_standard"]
+    dataset_inventory = ", ".join(
+        f"{item['dataset']} ({item['role']})"
+        for item in payload["adopted_datasets"]
+    )
     return (
         f"Direction ID: `{direction_id}`  \n"
         f"L1 task and dataset: {payload['task_type']} | {payload['dataset']}  \n"
+        f"Adopted dataset inventory: {dataset_inventory}  \n"
         "Unexposed-dataset search: "
         f"{payload['unexposed_dataset_search']}  \n"
         "L1 evidence standard: "
@@ -1409,6 +2025,10 @@ def update_record_placeholders(
         )
     elif layer == "direction":
         standard = payload["evidence_standard"]
+        dataset_inventory = ", ".join(
+            f"{item['dataset']} ({item['role']})"
+            for item in payload["adopted_datasets"]
+        )
         text = replace_managed_section(
             text,
             "DIRECTION_STANDARD_CURRENT",
@@ -1430,6 +2050,7 @@ def update_record_placeholders(
             f"- Checkpoint: `{checkpoint_id}`\n"
             f"- Task type: {payload['task_type']}\n"
             f"- Dataset: {payload['dataset']}\n"
+            f"- Adopted dataset inventory: {dataset_inventory}\n"
             "- Unexposed-dataset search: "
             f"{payload['unexposed_dataset_search']}\n"
             f"- User decision: {source['decision']}",
@@ -1441,7 +2062,13 @@ def update_record_placeholders(
             "L2 status: `ACTIVE_PI_CONFIRMED`  \n"
             f"Active checkpoint: `{checkpoint_id}`  \n"
             f"Problem: {payload['problem']}  \n"
+            f"Problem ID: `{payload['problem_id']}`  \n"
+            f"Method-cluster ID: `{payload['method_cluster_id']}`  \n"
+            f"Nearest-work gap: {payload['nearest_work_gap']}  \n"
+            f"Paper-grade rationale: {payload['paper_grade_rationale']}  \n"
             f"Core mechanism: {payload['core_mechanism']}  \n"
+            f"Falsifiable prediction: {payload['falsifiable_prediction']}  \n"
+            f"Contribution type: `{payload['contribution_type']}`  \n"
             f"Innovation claim: {payload['innovation_claim']}  \n"
             f"User decision: {source['decision']}  \n"
             f"Last material update: {now_iso()}",
@@ -1513,16 +2140,25 @@ def ensure_l2_scaffold(state_path: Path, direction_id: str, payload: dict[str, A
             "<!-- RPW:L1_CONTEXT:END -->\n"
             "<!-- RPW:SCIENCE_CURRENT:START -->\n"
             "L2 status: `MAPPING_NEAREST_WORK`  \n"
-            "Active problem + method decision source: UNSET  \n"
+            "Active problem + method-cluster decision source: UNSET  \n"
             f"Last material update: {now_iso()}\n"
             "<!-- RPW:SCIENCE_CURRENT:END -->\n\n"
-            "## Problem-to-method chain\n\nUNSET\n\n"
-            "## Nearest work and external baselines\n\nUNSET\n\n"
-            "## Dataset-indexed external-baseline matrix\n\n"
-            "| dataset | role | strongest recent top-conference baseline | venue/year | source/search scope | protocol match | metric/scale | baseline result | our matched result | status |\n"
-            "|---|---|---|---|---|---|---|---|---|---|\n\n"
+            "## Nearest-work problem clusters and external baselines\n\nUNSET\n\n"
+            "## Dataset-indexed external-baseline roster\n\n"
+            "| dataset | role | strongest recent top-conference baseline | venue/year | source/search scope | protocol evidence/status | comparison-role coverage/blockers | metric/scale | baseline result | our matched result | row status |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|\n\n"
+            "## Paper-grade problem portfolio\n\n"
+            "| problem ID | status | nearest-work cluster | shared unresolved problem | scientific value | failure evidence | paper-grade rationale | active/next action |\n"
+            "|---|---|---|---|---|---|---|---|\n\n"
+            "Engineering bugs, runtime performance, data plumbing, and routine implementation repairs belong in L3 and must not be promoted into this table.\n\n"
+            "## Problem-linked method clusters\n\n"
+            "| problem ID | cluster ID | status | shared intuition | mathematical mechanism | falsifiable prediction | representative evidence | external-baseline gap | next action |\n"
+            "|---|---|---|---|---|---|---|---|---|\n\n"
+            "Weighted expert voting, heuristic fusion, module stacking, threshold tricks, and similar engineering combinations may appear as baselines or L3 tools, not as the L2 core contribution.\n\n"
+            "## Active problem-to-method chain\n\nUNSET\n\n"
             "## Decision-relevant results\n\nUNSET\n\n"
-            "## Candidate and ceiling summary\n\nUNSET\n",
+            "## Method-cluster and ceiling summary\n\nUNSET\n\n"
+            "## L3 engineering notes (optional)\n\nUNSET\n",
             encoding="utf-8",
         )
     else:
@@ -1665,13 +2301,20 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
         "direction": (
             "task_type",
             "dataset",
+            "adopted_datasets",
             "unexposed_dataset_search",
             "evidence_standard",
         ),
         "science": (
             "direction_id",
+            "problem_id",
+            "method_cluster_id",
             "problem",
+            "nearest_work_gap",
+            "paper_grade_rationale",
             "core_mechanism",
+            "falsifiable_prediction",
+            "contribution_type",
             "innovation_claim",
             "external_baseline_status",
             "ceiling_summary",
@@ -1681,10 +2324,12 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
     if any(
         not nonblank(payload.get(key))
         for key in required[layer]
-        if key != "evidence_standard"
+        if key not in {"evidence_standard", "adopted_datasets"}
     ):
         return False
     if layer == "direction":
+        if not adopted_datasets_complete(payload.get("adopted_datasets")):
+            return False
         standard = payload.get("evidence_standard")
         if not isinstance(standard, dict):
             return False
@@ -1706,10 +2351,17 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
         ] < MIN_PAPER_READY_GAIN_POINTS:
             return False
     if layer == "science":
+        if payload.get("contribution_type") not in PAPER_GRADE_CONTRIBUTION_TYPES:
+            return False
         evidence_refs = payload.get("evidence_refs")
         if not isinstance(evidence_refs, dict):
             return False
-        for key in ("nearest_work", "external_baselines", "results"):
+        for key in (
+            "problem_portfolio",
+            "nearest_work",
+            "external_baselines",
+            "results",
+        ):
             ref = evidence_refs.get(key)
             if (
                 not isinstance(ref, dict)
@@ -1737,7 +2389,12 @@ def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bo
     if layer == "science":
         refs = state["layer_checkpoints"][layer]["payload"]["evidence_refs"]
         evidence_hashes: dict[Path, str] = {}
-        for name in ("nearest_work", "external_baselines", "results"):
+        for name in (
+            "problem_portfolio",
+            "nearest_work",
+            "external_baselines",
+            "results",
+        ):
             ref = refs[name]
             evidence_path = resolve_stored_path(state_path, ref.get("path"))
             if not evidence_path or not evidence_path.is_file():
@@ -1811,6 +2468,7 @@ def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bo
     direction_payload = direction.get("payload") or {}
     science_payload = science.get("payload") or {}
     anchor = state.get("evaluation_anchor") or {}
+    roster = state.get("dataset_baseline_roster") or {}
     minimum_gain = (direction_payload.get("evidence_standard") or {}).get(
         "minimum_paper_gain_points"
     )
@@ -1819,7 +2477,12 @@ def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bo
         or assessment.get("science_id") != science.get("id")
         or assessment.get("current_task") != direction_payload.get("task_type")
         or assessment.get("dataset") != direction_payload.get("dataset")
+        or assessment.get("adopted_datasets")
+        != direction_payload.get("adopted_datasets")
         or assessment.get("current_work_problem") != science_payload.get("problem")
+        or assessment.get("problem_id") != science_payload.get("problem_id")
+        or assessment.get("method_cluster_id")
+        != science_payload.get("method_cluster_id")
         or assessment.get("innovation") != science_payload.get("innovation_claim")
         or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
         or not evaluation_anchor_usable(state)
@@ -1827,6 +2490,12 @@ def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bo
         or assessment.get("primary_metric") != anchor.get("primary_metric")
         or assessment.get("metric_scale") != anchor.get("metric_scale")
         or assessment.get("metric_direction") != anchor.get("metric_direction")
+        or not baseline_roster_usable(state, require_matched=True)
+        or not baseline_roster_record_usable(state_path, state)
+        or assessment.get("baseline_roster_revision") != roster.get("revision")
+        or assessment.get("baseline_roster_payload_sha256")
+        != roster.get("payload_sha256")
+        or assessment.get("dataset_baseline_matrix") != roster.get("rows")
         or not finite_number(minimum_gain)
         or not math.isclose(
             assessment.get("minimum_paper_gain_points"), minimum_gain, abs_tol=1e-9
@@ -1895,6 +2564,19 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             "P0",
             "The evaluation anchor is not tied to the active confirmed L1 direction",
         )
+    roster = state.get("dataset_baseline_roster")
+    if roster is not None and not baseline_roster_usable(state):
+        add(
+            "DATASET_BASELINE_ROSTER_INVALID",
+            "P0",
+            "The external-baseline roster is incomplete, changed, or does not exactly cover the adopted datasets",
+        )
+    elif roster is not None and not baseline_roster_record_usable(state_path, state):
+        add(
+            "DATASET_BASELINE_ROSTER_RECORD_CHANGED",
+            "P0",
+            "The durable external-baseline roster record is missing, outside the project, or lacks its recording receipt",
+        )
     if state["phase"] in {"paper_ready_pending_pi", "paper_handoff_approved"}:
         if not evaluation_anchor_usable(state):
             add(
@@ -1946,11 +2628,13 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0",
                 f"Checkpoint {layer!r} has an unsafe or invalid ID: {checkpoint_id!r}",
             )
-        if checkpoint.get("status") == "LEGACY_CONFIRMED_NEEDS_AUDIT":
+        if str(checkpoint.get("status") or "").startswith(
+            "LEGACY_CONFIRMED_NEEDS_"
+        ):
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v11",
+                f"Legacy {layer} approval lacks the structured controls required by schema v13",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -1975,7 +2659,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
                 "P0",
-                f"Confirmed {layer} checkpoint lacks required schema-v11 control fields",
+                f"Confirmed {layer} checkpoint lacks required schema-v13 control fields",
             )
         if (
             layer == "paper"
@@ -2034,6 +2718,14 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
     science = state["layer_checkpoints"].get("science", {})
     paper = state["layer_checkpoints"].get("paper", {})
     if science.get("status") == "CONFIRMED_BY_PI":
+        if not baseline_roster_usable(state) or not baseline_roster_record_usable(
+            state_path, state
+        ):
+            add(
+                "SCIENCE_BASELINE_ROSTER_REQUIRED",
+                "P0",
+                "Confirmed L2 science requires one structured external-baseline roster row per adopted dataset",
+            )
         if (science.get("payload") or {}).get("direction_id") != direction.get("id"):
             add(
                 "SCIENCE_DIRECTION_LINK_MISMATCH",
@@ -2084,6 +2776,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
     direction_payload = direction.get("payload") or {}
     science_payload = science.get("payload") or {}
     assessment_anchor = state.get("evaluation_anchor") or {}
+    assessment_roster = state.get("dataset_baseline_roster") or {}
     direction_minimum = (direction_payload.get("evidence_standard") or {}).get(
         "minimum_paper_gain_points"
     )
@@ -2098,7 +2791,12 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         or assessment.get("science_id") != science.get("id")
         or assessment.get("current_task") != direction_payload.get("task_type")
         or assessment.get("dataset") != direction_payload.get("dataset")
+        or assessment.get("adopted_datasets")
+        != direction_payload.get("adopted_datasets")
         or assessment.get("current_work_problem") != science_payload.get("problem")
+        or assessment.get("problem_id") != science_payload.get("problem_id")
+        or assessment.get("method_cluster_id")
+        != science_payload.get("method_cluster_id")
         or assessment.get("innovation") != science_payload.get("innovation_claim")
         or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
         or assessment.get("evaluation_anchor_revision")
@@ -2107,12 +2805,34 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         or assessment.get("metric_scale") != assessment_anchor.get("metric_scale")
         or assessment.get("metric_direction")
         != assessment_anchor.get("metric_direction")
+        or assessment.get("baseline_roster_revision")
+        != assessment_roster.get("revision")
+        or assessment.get("baseline_roster_payload_sha256")
+        != assessment_roster.get("payload_sha256")
+        or assessment.get("dataset_baseline_matrix")
+        != assessment_roster.get("rows")
         or minimum_mismatch
     ):
         add(
             "PAPER_ASSESSMENT_LINK_MISMATCH",
             "P0",
             "Paper-ready assessment content is not tied to the active L1/L2 checkpoints and gain floor",
+        )
+    active_job_ids = {
+        job.get("id")
+        for job in state.get("jobs", [])
+        if job.get("status") in ACTIVE_JOB_STATUSES
+    }
+    artifact_job_ids = set(
+        ((state.get("monitoring") or {}).get("artifact_fingerprints_by_job") or {})
+    )
+    stale_artifact_jobs = sorted(artifact_job_ids - active_job_ids)
+    if stale_artifact_jobs:
+        add(
+            "STALE_MONITOR_ARTIFACT_ACK",
+            "P1",
+            "Artifact acknowledgements reference inactive jobs: "
+            + ", ".join(stale_artifact_jobs),
         )
     if assessment:
         assessment_path = resolve_stored_path(state_path, assessment.get("path"))
@@ -2573,6 +3293,17 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "seed_selection_risk_acceptance": state.get(
             "seed_selection_risk_acceptance"
         ),
+        "dataset_baseline_roster": state.get("dataset_baseline_roster"),
+        "dataset_baseline_roster_history_count": len(
+            state.get("dataset_baseline_roster_history", [])
+        ),
+        "invalidated_paper_assessment_count": int(
+            state.get("invalidated_paper_assessment_count", 0)
+        )
+        + len(state.get("invalidated_paper_assessments", [])),
+        "recent_invalidated_paper_assessments": state.get(
+            "invalidated_paper_assessments", []
+        )[-5:],
         "missing_required_checkpoints": [
             layer
             for layer in required_layers_for_phase(state["phase"])
@@ -2635,6 +3366,24 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
     recent_instruction_updates = (
         (state.get("instruction_maintenance") or {}).get("recent_updates") or []
     )
+    latest_notification_raw = next(
+        (
+            item
+            for item in reversed(state.get("notifications", []))
+            if isinstance(item, dict)
+            and item.get("kind") in {"problem_switch", "method_cluster_switch"}
+        ),
+        None,
+    )
+    latest_notification = (
+        {
+            "id": latest_notification_raw.get("id"),
+            "kind": latest_notification_raw.get("kind"),
+            "transition": latest_notification_raw.get("transition"),
+        }
+        if isinstance(latest_notification_raw, dict)
+        else None
+    )
     wakeup_signal = {
         "phase": state["phase"],
         "status": state["status"],
@@ -2647,6 +3396,9 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
             for layer in CHECKPOINT_LAYERS
         },
         "evaluation_anchor": state.get("evaluation_anchor"),
+        "dataset_baseline_roster_payload_sha256": (
+            (state.get("dataset_baseline_roster") or {}).get("payload_sha256")
+        ),
         "paper_assessment_payload_sha256": (
             (state.get("paper_ready_assessment") or {}).get(
                 "payload_sha256_at_gate"
@@ -2677,11 +3429,19 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
         "latest_instruction_update": (
             recent_instruction_updates[-1] if recent_instruction_updates else None
         ),
+        "latest_scientific_switch": latest_notification,
         "control_issue_codes": issue_codes,
     }
     wakeup_fingerprint = canonical_payload_sha256(wakeup_signal)
     monitoring = state.get("monitoring") or {}
     last_acknowledged = monitoring.get("last_acknowledged_wakeup_fingerprint")
+    active_job_ids = {job["id"] for job in active_jobs if nonblank(job.get("id"))}
+    saved_artifacts = monitoring.get("artifact_fingerprints_by_job") or {}
+    active_artifacts = {
+        job_id: fingerprint
+        for job_id, fingerprint in saved_artifacts.items()
+        if job_id in active_job_ids
+    }
     return {
         "schema_version": state["schema_version"],
         "project": state["project"],
@@ -2693,10 +3453,12 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
         "wakeup_fingerprint": wakeup_fingerprint,
         "wakeup_changed_since_ack": wakeup_fingerprint != last_acknowledged,
         "last_acknowledged_wakeup_fingerprint": last_acknowledged,
-        "last_acknowledged_artifact_fingerprint": monitoring.get(
-            "last_acknowledged_artifact_fingerprint"
+        "acknowledged_artifact_fingerprints": active_artifacts,
+        "legacy_unscoped_artifact_fingerprint": monitoring.get(
+            "legacy_unscoped_artifact_fingerprint"
         ),
         "monitor_acknowledged_at": monitoring.get("acknowledged_at"),
+        "latest_scientific_switch": latest_notification,
         "updated_at": state["updated_at"],
         "pending_macro_count": len(pending),
         "pending_macro_ids": [question.get("id") for question in pending],
@@ -2705,6 +3467,12 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
         "checkpoint_status": checkpoint_status,
         "evaluation_anchor_revision": (
             (state.get("evaluation_anchor") or {}).get("revision")
+        ),
+        "baseline_roster_revision": (
+            (state.get("dataset_baseline_roster") or {}).get("revision")
+        ),
+        "baseline_roster_all_matched": baseline_roster_usable(
+            state, require_matched=True
         ),
         "paper_ready_assessment_present": bool(state.get("paper_ready_assessment")),
         "active_jobs": active_jobs,
@@ -2814,11 +3582,32 @@ def cmd_monitor_ack(args: argparse.Namespace) -> None:
         if args.artifact_fingerprint is not None
         else None
     )
-    state["monitoring"] = {
-        "last_acknowledged_wakeup_fingerprint": current,
-        "last_acknowledged_artifact_fingerprint": artifact,
-        "acknowledged_at": now_iso(),
-    }
+    has_artifact_action = artifact is not None or args.clear_artifact_fingerprint
+    if bool(args.job_id) != has_artifact_action:
+        raise SystemExit(
+            "--job-id and either --artifact-fingerprint or "
+            "--clear-artifact-fingerprint must be supplied together"
+        )
+    monitoring = state.setdefault("monitoring", empty_monitoring())
+    fingerprints = monitoring.setdefault("artifact_fingerprints_by_job", {})
+    if has_artifact_action:
+        job_id = clean_text(args.job_id, "--job-id")
+        active_job_ids = {
+            job.get("id")
+            for job in state.get("jobs", [])
+            if job.get("status") in ACTIVE_JOB_STATUSES
+        }
+        if job_id not in active_job_ids:
+            raise SystemExit(
+                "Artifact acknowledgement requires an existing active --job-id"
+            )
+        if args.clear_artifact_fingerprint:
+            fingerprints.pop(job_id, None)
+        else:
+            fingerprints[job_id] = artifact
+        monitoring["legacy_unscoped_artifact_fingerprint"] = None
+    monitoring["last_acknowledged_wakeup_fingerprint"] = current
+    monitoring["acknowledged_at"] = now_iso()
     save_state(path, state)
     print(json.dumps(compact_state_summary(path, state), ensure_ascii=False, indent=2))
 
@@ -2904,8 +3693,9 @@ def cmd_paper_revoke(args: argparse.Namespace) -> None:
                 "- L1/L2 remain active; a new paper report and decision are required.\n"
             )
     state["layer_checkpoints"]["paper"] = empty_checkpoint()
-    state["paper_ready_assessment"] = None
-    state["seed_selection_risk_acceptance"] = None
+    archive_invalidated_paper_assessment(
+        state, "paper_handoff_revoked_by_pi", "revoked-by-pi"
+    )
     state["phase"] = "confirmed_project"
     refresh_pause(state)
     save_state(path, state)
@@ -3116,13 +3906,39 @@ def compact_recent_notifications(state: dict[str, Any]) -> None:
         )
 
 
-def append_notification(state: dict[str, Any], text: str) -> dict[str, Any]:
+def append_notification(
+    state: dict[str, Any],
+    text: str,
+    kind: str = "general",
+    *,
+    from_id: str | None = None,
+    to_id: str | None = None,
+) -> dict[str, Any]:
+    if kind not in NOTIFICATION_KINDS:
+        raise SystemExit(
+            "Notification kind must be one of: "
+            + ", ".join(sorted(NOTIFICATION_KINDS))
+        )
     state["notification_sequence"] = int(state.get("notification_sequence", 0)) + 1
     notification = {
         "id": f"N{state['notification_sequence']:03d}",
+        "kind": kind,
         "text": text,
         "created_at": now_iso(),
     }
+    if from_id is not None or to_id is not None:
+        if kind not in {"problem_switch", "method_cluster_switch"}:
+            raise SystemExit(
+                "Structured from/to IDs are only valid for scientific switch notifications"
+            )
+        previous_id = validate_checkpoint_id(str(from_id or ""))
+        next_id_value = validate_checkpoint_id(str(to_id or ""))
+        if previous_id == next_id_value:
+            raise SystemExit("A scientific switch must change from_id to a different to_id")
+        notification["transition"] = {
+            "from_id": previous_id,
+            "to_id": next_id_value,
+        }
     state["notifications"].append(notification)
     compact_recent_notifications(state)
     return notification
@@ -3182,7 +3998,23 @@ def cmd_notify(args: argparse.Namespace) -> None:
     notification_text = str(args.text).strip()
     if not notification_text:
         raise SystemExit("A notification requires non-empty --text")
-    notification = append_notification(state, notification_text)
+    switch_kind = args.kind in {"problem_switch", "method_cluster_switch"}
+    if switch_kind and not (args.from_id and args.to_id):
+        raise SystemExit(
+            "Scientific switch notifications require both --from-id and --to-id"
+        )
+    if not switch_kind and (args.from_id or args.to_id):
+        raise SystemExit(
+            "--from-id/--to-id are only valid with problem_switch or "
+            "method_cluster_switch"
+        )
+    notification = append_notification(
+        state,
+        notification_text,
+        args.kind,
+        from_id=args.from_id,
+        to_id=args.to_id,
+    )
     save_state(path, state)
     print(
         json.dumps(
@@ -3790,6 +4622,7 @@ def checkpoint_payload(
         required = {
             "task_type": args.task_type,
             "dataset": args.dataset,
+            "primary_dataset": args.primary_dataset,
             "unexposed_dataset_search": args.unexposed_dataset_search,
             "competitive_bar": args.competitive_bar,
             "novelty_sufficiency": args.novelty_sufficiency,
@@ -3804,6 +4637,9 @@ def checkpoint_payload(
         return {
             "task_type": str(args.task_type).strip(),
             "dataset": str(args.dataset).strip(),
+            "adopted_datasets": normalize_adopted_datasets(
+                args.primary_dataset, args.supporting_dataset
+            ),
             "unexposed_dataset_search": str(args.unexposed_dataset_search).strip(),
             "evidence_standard": {
                 "competitive_bar": str(args.competitive_bar).strip(),
@@ -3816,8 +4652,14 @@ def checkpoint_payload(
     if args.layer == "science":
         required = {
             "direction_id": args.direction_id,
+            "problem_id": args.problem_id,
+            "method_cluster_id": args.method_cluster_id,
             "problem": args.problem,
+            "nearest_work_gap": args.nearest_work_gap,
+            "paper_grade_rationale": args.paper_grade_rationale,
             "core_mechanism": args.core_mechanism,
+            "falsifiable_prediction": args.falsifiable_prediction,
+            "contribution_type": args.contribution_type,
             "innovation_claim": args.innovation_claim,
             "external_baseline_status": args.external_baseline_status,
             "ceiling_summary": args.ceiling_summary,
@@ -3830,10 +4672,44 @@ def checkpoint_payload(
         direction = state["layer_checkpoints"]["direction"]
         if not checkpoint_usable(state_path, state, "direction"):
             raise SystemExit("Cannot confirm science before a complete L1 direction")
+        if not baseline_roster_usable(state) or not baseline_roster_record_usable(
+            state_path, state
+        ):
+            raise SystemExit(
+                "Cannot confirm science before every adopted dataset has a structured "
+                "external-baseline roster entry"
+            )
         required = {key: str(value).strip() for key, value in required.items()}
+        required["problem_id"] = validate_checkpoint_id(required["problem_id"])
+        required["method_cluster_id"] = validate_checkpoint_id(
+            required["method_cluster_id"]
+        )
+        if required["contribution_type"] not in PAPER_GRADE_CONTRIBUTION_TYPES:
+            raise SystemExit(
+                "--contribution-type must name a paper-grade scientific contribution: "
+                + ", ".join(sorted(PAPER_GRADE_CONTRIBUTION_TYPES))
+            )
+        normalized_core = required["core_mechanism"].casefold()
+        engineering_pattern = next(
+            (
+                pattern
+                for pattern in sorted(ENGINEERING_ONLY_CORE_PATTERNS)
+                if pattern.casefold() in normalized_core
+            ),
+            None,
+        )
+        if engineering_pattern is not None:
+            raise SystemExit(
+                "L2 core mechanism is engineering-only "
+                f"({engineering_pattern!r}). Keep it in L3 or as a baseline; "
+                "confirm a paper-grade scientific mechanism instead."
+            )
         if required["direction_id"] != direction.get("id"):
             raise SystemExit("--direction-id must match the active confirmed direction")
         required["evidence_refs"] = {
+            "problem_portfolio": evidence_reference(
+                state_path, args.problem_portfolio_record, "problem_portfolio_record"
+            ),
             "nearest_work": evidence_reference(
                 state_path, args.nearest_work_record, "nearest_work_record"
             ),
@@ -3844,6 +4720,10 @@ def checkpoint_payload(
                 state_path, args.result_record, "result_record"
             ),
         }
+        if args.change_notification is not None:
+            required["change_notification"] = clean_text(
+                args.change_notification, "--change-notification"
+            )
         return required
     if args.layer == "paper":
         required = {
@@ -3969,6 +4849,125 @@ def invalidate_evaluation_anchor(
     state["seed_selection_risk_acceptance"] = None
 
 
+def cmd_baseline_roster(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    require_execution_active(state, "record the dataset baseline roster")
+    if state.get("phase") not in {"confirmed_project", "paper_ready_pending_pi"}:
+        raise SystemExit(
+            "The dataset baseline roster may be set or revised only in "
+            "confirmed_project or paper_ready_pending_pi; an approved handoff must be "
+            "revoked by the PI first"
+        )
+    if not checkpoint_usable(path, state, "direction"):
+        raise SystemExit("A usable confirmed L1 direction is required")
+    reason = clean_text(args.reason, "--reason")
+    record, stored, _ = normalize_project_record(path, args.record)
+    if args.rows_file is not None:
+        rows_path, _, _ = normalize_project_record(path, args.rows_file)
+        raw_rows = rows_path.read_text(encoding="utf-8")
+    else:
+        raw_rows = args.rows_json
+    rows = parse_dataset_baseline_matrix(raw_rows, require_matched=False)
+    direction = state["layer_checkpoints"]["direction"]
+    adopted = (direction.get("payload") or {}).get("adopted_datasets")
+    if not baseline_rows_cover_adopted_datasets(rows, adopted):
+        raise SystemExit(
+            "The baseline roster must contain exactly one row for every adopted dataset, "
+            "with the same primary/supporting roles"
+        )
+    current = state.get("dataset_baseline_roster")
+    if isinstance(current, dict) and (
+        current.get("direction_id") == direction.get("id")
+        and current.get("rows") == rows
+    ):
+        raise SystemExit("Dataset baseline roster is already set to these values")
+    revision = int((current or {}).get("revision") or 0) + 1
+    roster = {
+        "direction_id": direction.get("id"),
+        "revision": revision,
+        "rows": rows,
+        "reason": reason,
+        "recorded_at": now_iso(),
+        "record_path": stored,
+        "record_kind": "baseline_roster_receipt",
+    }
+    roster["payload_sha256"] = baseline_roster_payload_sha256(roster)
+    if isinstance(current, dict):
+        state.setdefault("dataset_baseline_roster_history", []).append(
+            {
+                **current,
+                "replaced_at": now_iso(),
+                "replacement_revision": revision,
+                "replacement_reason": reason,
+            }
+        )
+    append_baseline_roster_receipt(record, roster, reason)
+    roster["record_sha256_at_receipt"] = sha256_file(record)
+    state["dataset_baseline_roster"] = roster
+    archive_invalidated_paper_assessment(
+        state, "dataset_baseline_roster_change", f"baseline-roster-r{revision}"
+    )
+    invalidate_checkpoint(
+        path, state, "paper", "baseline_roster_change", f"baseline-roster-r{revision}"
+    )
+    state["phase"] = "confirmed_project"
+    save_state(path, state)
+    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
+
+
+def cmd_direction_datasets(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    require_execution_active(state, "normalize a legacy adopted-dataset inventory")
+    direction = state["layer_checkpoints"].get("direction", {})
+    if direction.get("status") != "LEGACY_CONFIRMED_NEEDS_DATASET_INVENTORY":
+        raise SystemExit(
+            "direction-datasets is only for an unambiguous migrated L1 checkpoint"
+        )
+    if not args.unambiguous:
+        raise SystemExit(
+            "Refusing agent-owned normalization without --unambiguous; if dataset "
+            "identity or role is uncertain, reconfirm L1 with the PI"
+        )
+    reason = clean_text(args.reason, "--reason")
+    adopted = normalize_adopted_datasets(
+        args.primary_dataset, args.supporting_dataset
+    )
+    record = resolve_stored_path(path, direction.get("record_path"))
+    if record is None or not record.is_file() or not stored_path_is_project_local(
+        path, direction.get("record_path")
+    ):
+        raise SystemExit("The migrated L1 durable record is unavailable")
+    payload = dict(direction.get("payload") or {})
+    payload["adopted_datasets"] = adopted
+    source = direction.get("decision_source") or {}
+    update_record_placeholders(record, "direction", direction["id"], payload, source)
+    with record.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(
+            "\n\n## Schema-v12 adopted-dataset normalization\n\n"
+            f"- Recorded at: {now_iso()}\n"
+            f"- Reason this is unambiguous: {reason}\n"
+            "- This receipt makes no new L1 choice; uncertainty requires PI reconfirmation.\n"
+            "- Adopted datasets:\n\n"
+            "```json\n"
+            + json.dumps(adopted, ensure_ascii=False, indent=2)
+            + "\n```\n"
+        )
+    direction["payload"] = payload
+    direction["summary"] = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    direction["status"] = "CONFIRMED_BY_PI"
+    direction["record_sha256_at_confirmation"] = sha256_file(record)
+    append_notification(
+        state,
+        "旧版 L1 的数据集清单已按现有记录补齐，没有更换任务或数据集。"
+        f"理由：{reason}",
+    )
+    ensure_l2_scaffold(path, direction["id"], payload)
+    save_state(path, state)
+    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
+
+
 def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
@@ -3980,6 +4979,13 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         )
     if not checkpoint_usable(path, state, "direction"):
         raise SystemExit("A usable confirmed L1 direction is required")
+    if not baseline_roster_usable(state) or not baseline_roster_record_usable(
+        path, state
+    ):
+        raise SystemExit(
+            "Set a structured external-baseline roster for every adopted dataset "
+            "before locking the evaluation anchor"
+        )
     primary_metric = str(args.primary_metric or "").strip()
     reason = str(args.reason or "").strip()
     if not primary_metric or not reason:
@@ -4025,8 +5031,9 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         "reason": reason,
         "legacy_derived": False,
     }
-    state["paper_ready_assessment"] = None
-    state["seed_selection_risk_acceptance"] = None
+    archive_invalidated_paper_assessment(
+        state, "evaluation_anchor_change", f"evaluation-anchor-r{revision}"
+    )
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
 
@@ -4041,6 +5048,27 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     source = approving_decision_source(state, args, args.layer)
     record, stored, _ = normalize_project_record(path, args.record)
     previous = state["layer_checkpoints"][args.layer]
+    science_problem_changed = False
+    science_method_changed = False
+    if args.layer == "science" and previous.get("status") == "CONFIRMED_BY_PI":
+        previous_payload = previous.get("payload") or {}
+        science_problem_changed = (
+            previous_payload.get("problem_id") != payload.get("problem_id")
+            or previous_payload.get("problem") != payload.get("problem")
+        )
+        science_method_changed = (
+            previous_payload.get("method_cluster_id")
+            != payload.get("method_cluster_id")
+            or previous_payload.get("core_mechanism")
+            != payload.get("core_mechanism")
+        )
+        if (science_problem_changed or science_method_changed) and not nonblank(
+            args.change_notification
+        ):
+            raise SystemExit(
+                "Replacing the confirmed L2 problem or method cluster requires a "
+                "plain-language --change-notification for the PI"
+            )
     if (
         previous.get("status") == "CONFIRMED_BY_PI"
         and previous.get("id") == args.id
@@ -4092,23 +5120,46 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         )
         if scope_changed:
             invalidate_evaluation_anchor(state, "compass_change", args.id)
+            invalidate_baseline_roster(state, "compass_change", args.id)
             for layer in ("direction", "science", "paper"):
                 invalidate_checkpoint(path, state, layer, "compass_change", args.id)
-            state["paper_ready_assessment"] = None
+            archive_invalidated_paper_assessment(
+                state, "compass_change", args.id
+            )
             state["phase"] = "exploration"
         elif state["phase"] == "discussion":
             state["phase"] = "exploration"
     elif args.layer == "direction":
         invalidate_evaluation_anchor(state, "direction_change", args.id)
+        invalidate_baseline_roster(state, "direction_change", args.id)
         for layer in ("science", "paper"):
             invalidate_checkpoint(path, state, layer, "direction_change", args.id)
-        state["paper_ready_assessment"] = None
+        archive_invalidated_paper_assessment(state, "direction_change", args.id)
         state["phase"] = "confirmed_project"
         ensure_l2_scaffold(path, args.id, payload)
     elif args.layer == "science":
         invalidate_checkpoint(path, state, "paper", "science_change", args.id)
-        state["paper_ready_assessment"] = None
-        state["seed_selection_risk_acceptance"] = None
+        archive_invalidated_paper_assessment(state, "science_change", args.id)
+        if science_problem_changed:
+            append_notification(
+                state,
+                "L2 科学问题已更换："
+                f"`{(previous.get('payload') or {}).get('problem_id')}` → "
+                f"`{payload.get('problem_id')}`。{payload.get('change_notification')}",
+                "problem_switch",
+                from_id=(previous.get("payload") or {}).get("problem_id"),
+                to_id=payload.get("problem_id"),
+            )
+        if science_method_changed:
+            append_notification(
+                state,
+                "L2 核心方法簇已更换："
+                f"`{(previous.get('payload') or {}).get('method_cluster_id')}` → "
+                f"`{payload.get('method_cluster_id')}`。{payload.get('change_notification')}",
+                "method_cluster_switch",
+                from_id=(previous.get("payload") or {}).get("method_cluster_id"),
+                to_id=payload.get("method_cluster_id"),
+            )
         state["phase"] = "confirmed_project"
     elif args.layer == "paper":
         state["phase"] = "paper_handoff_approved"
@@ -4175,8 +5226,6 @@ def cmd_phase(args: argparse.Namespace) -> None:
             for field in ("metric_scale", *PAPER_ASSESSMENT_NUMERIC_FIELDS)
             if getattr(args, field) is None
         )
-        if args.dataset_baseline_matrix is None:
-            missing.append("dataset_baseline_matrix")
         if missing:
             raise SystemExit(
                 "Paper-ready assessment is missing structured fields: "
@@ -4185,13 +5234,28 @@ def cmd_phase(args: argparse.Namespace) -> None:
         direction_payload = state["layer_checkpoints"]["direction"]["payload"]
         science_payload = state["layer_checkpoints"]["science"]["payload"]
         anchor = state["evaluation_anchor"]
+        roster = state.get("dataset_baseline_roster") or {}
+        if not baseline_roster_usable(
+            state, require_matched=True
+        ) or not baseline_roster_record_usable(path, state):
+            raise SystemExit(
+                "Entering paper-ready phase requires a current MATCHED external-baseline "
+                "row for every adopted dataset"
+            )
         assessment_text = {
             field: str(getattr(args, field)).strip()
             for field in PAPER_ASSESSMENT_TEXT_FIELDS
         }
-        dataset_baseline_matrix = parse_dataset_baseline_matrix(
-            args.dataset_baseline_matrix
-        )
+        dataset_baseline_matrix = roster["rows"]
+        if args.dataset_baseline_matrix is not None:
+            supplied_matrix = parse_dataset_baseline_matrix(
+                args.dataset_baseline_matrix
+            )
+            if supplied_matrix != dataset_baseline_matrix:
+                raise SystemExit(
+                    "--dataset-baseline-matrix does not match the current baseline roster; "
+                    "update the roster first or omit this compatibility argument"
+                )
         if (
             assessment_text["primary_metric"] != anchor["primary_metric"]
             or args.metric_scale != anchor["metric_scale"]
@@ -4240,9 +5304,14 @@ def cmd_phase(args: argparse.Namespace) -> None:
             "science_id": state["layer_checkpoints"]["science"].get("id"),
             "current_task": direction_payload["task_type"],
             "dataset": direction_payload["dataset"],
+            "adopted_datasets": direction_payload["adopted_datasets"],
             "current_work_problem": science_payload["problem"],
+            "problem_id": science_payload["problem_id"],
+            "method_cluster_id": science_payload["method_cluster_id"],
             "innovation": science_payload["innovation_claim"],
             "core_mechanism": science_payload["core_mechanism"],
+            "baseline_roster_revision": roster["revision"],
+            "baseline_roster_payload_sha256": roster["payload_sha256"],
             "minimum_paper_gain_points": float(minimum_gain),
             "improvement_points": improvement_points,
             "evaluation_anchor_revision": anchor["revision"],
@@ -4294,8 +5363,9 @@ def cmd_phase(args: argparse.Namespace) -> None:
         else:
             state["seed_selection_risk_acceptance"] = None
     if current == "paper_ready_pending_pi" and target == "confirmed_project":
-        state["paper_ready_assessment"] = None
-        state["seed_selection_risk_acceptance"] = None
+        archive_invalidated_paper_assessment(
+            state, "paper_ready_withdrawn", "confirmed-project-return"
+        )
     state["phase"] = target
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
@@ -4485,6 +5555,10 @@ def cmd_job_update(args: argparse.Namespace) -> None:
         job.get("next_action") or ""
     ).strip():
         raise SystemExit("An active job requires a resumable next action")
+    if job.get("status") not in ACTIVE_JOB_STATUSES:
+        (state.get("monitoring") or {}).get(
+            "artifact_fingerprints_by_job", {}
+        ).pop(job_id, None)
     job["updated_at"] = now_iso()
     save_state(path, state)
     print(json.dumps({"updated": job, "state": state_summary(path, state)}, ensure_ascii=False, indent=2))
@@ -4507,6 +5581,9 @@ def cmd_job_remove(args: argparse.Namespace) -> None:
     if job.get("status") in ACTIVE_JOB_STATUSES and not args.force:
         raise SystemExit("Refusing to remove an active job without --force")
     state["jobs"] = [item for item in state["jobs"] if item.get("id") != job_id]
+    (state.get("monitoring") or {}).get("artifact_fingerprints_by_job", {}).pop(
+        job_id, None
+    )
     save_state(path, state)
     print(json.dumps({"removed": job, "state": state_summary(path, state)}, ensure_ascii=False, indent=2))
 
@@ -4557,9 +5634,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     monitor_ack_parser.add_argument("state")
     monitor_ack_parser.add_argument("--wakeup-fingerprint", required=True)
-    monitor_ack_parser.add_argument(
+    monitor_ack_parser.add_argument("--job-id")
+    monitor_artifact = monitor_ack_parser.add_mutually_exclusive_group()
+    monitor_artifact.add_argument(
         "--artifact-fingerprint",
         help="Project-specific job/result fingerprint processed in this wakeup",
+    )
+    monitor_artifact.add_argument(
+        "--clear-artifact-fingerprint",
+        action="store_true",
+        help="Explicitly clear the saved artifact fingerprint for --job-id",
     )
     monitor_ack_parser.set_defaults(func=cmd_monitor_ack)
 
@@ -4622,6 +5706,17 @@ def build_parser() -> argparse.ArgumentParser:
     notify_parser = subparsers.add_parser("notify", help="Record a recent non-blocking notification")
     notify_parser.add_argument("state")
     notify_parser.add_argument("--text", required=True)
+    notify_parser.add_argument(
+        "--kind", choices=sorted(NOTIFICATION_KINDS), default="general"
+    )
+    notify_parser.add_argument(
+        "--from-id",
+        help="Previous problem or method-cluster ID for a scientific switch",
+    )
+    notify_parser.add_argument(
+        "--to-id",
+        help="New problem or method-cluster ID for a scientific switch",
+    )
     notify_parser.set_defaults(func=cmd_notify)
 
     compact_parser = subparsers.add_parser(
@@ -4809,6 +5904,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation_parser.set_defaults(func=cmd_evaluation_anchor)
 
+    baseline_roster_parser = subparsers.add_parser(
+        "baseline-roster",
+        help="Maintain one external-baseline row for every adopted dataset",
+    )
+    baseline_roster_parser.add_argument("state")
+    baseline_rows = baseline_roster_parser.add_mutually_exclusive_group(required=True)
+    baseline_rows.add_argument(
+        "--rows-json",
+        help=(
+            "JSON array with one row per adopted dataset, typed protocol_status, "
+            "and exact comparison_roles coverage"
+        ),
+    )
+    baseline_rows.add_argument(
+        "--rows-file", help="Project-local UTF-8 JSON file containing the roster rows"
+    )
+    baseline_roster_parser.add_argument(
+        "--record", required=True, help="Project-local durable L2 record to append"
+    )
+    baseline_roster_parser.add_argument("--reason", required=True)
+    baseline_roster_parser.set_defaults(func=cmd_baseline_roster)
+
+    direction_datasets_parser = subparsers.add_parser(
+        "direction-datasets",
+        help="Normalize an unambiguous migrated L1 adopted-dataset inventory",
+    )
+    direction_datasets_parser.add_argument("state")
+    direction_datasets_parser.add_argument("--primary-dataset", required=True)
+    direction_datasets_parser.add_argument(
+        "--supporting-dataset", action="append"
+    )
+    direction_datasets_parser.add_argument("--reason", required=True)
+    direction_datasets_parser.add_argument(
+        "--unambiguous", action="store_true"
+    )
+    direction_datasets_parser.set_defaults(func=cmd_direction_datasets)
+
     confirm_parser = subparsers.add_parser(
         "confirm", help="Record a typed user-confirmed checkpoint"
     )
@@ -4828,6 +5960,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     confirm_parser.add_argument("--task-type")
     confirm_parser.add_argument("--dataset")
+    confirm_parser.add_argument("--primary-dataset")
+    confirm_parser.add_argument(
+        "--supporting-dataset",
+        action="append",
+        help="Adopted supporting dataset; repeat for each dataset",
+    )
     confirm_parser.add_argument("--unexposed-dataset-search")
     confirm_parser.add_argument("--competitive-bar")
     confirm_parser.add_argument("--novelty-sufficiency")
@@ -4842,17 +5980,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Numeric project paper-ready gain floor in percentage points; defaults to 1 and cannot be lower",
     )
     confirm_parser.add_argument("--direction-id")
+    confirm_parser.add_argument("--problem-id")
+    confirm_parser.add_argument("--method-cluster-id")
     confirm_parser.add_argument("--problem")
+    confirm_parser.add_argument("--nearest-work-gap")
+    confirm_parser.add_argument("--paper-grade-rationale")
     confirm_parser.add_argument("--core-mechanism")
+    confirm_parser.add_argument("--falsifiable-prediction")
+    confirm_parser.add_argument(
+        "--contribution-type", choices=sorted(PAPER_GRADE_CONTRIBUTION_TYPES)
+    )
     confirm_parser.add_argument("--innovation-claim")
     confirm_parser.add_argument(
         "--external-baseline-status",
         help="Per-dataset external-baseline coverage, protocol match, and blockers",
     )
     confirm_parser.add_argument("--ceiling-summary")
+    confirm_parser.add_argument("--problem-portfolio-record")
     confirm_parser.add_argument("--nearest-work-record")
     confirm_parser.add_argument("--baseline-record")
     confirm_parser.add_argument("--result-record")
+    confirm_parser.add_argument(
+        "--change-notification",
+        help="Plain-language PI notification when replacing a confirmed problem or method cluster",
+    )
     confirm_parser.add_argument("--science-id")
     confirm_parser.add_argument("--headline-claim")
     confirm_parser.add_argument("--handoff-target")

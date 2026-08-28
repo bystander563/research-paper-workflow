@@ -110,6 +110,11 @@ Actively search for alternative names for the same idea. If the nearest work alr
 
 Use established field terms from primary literature, benchmark definitions, or other authoritative sources. Do not turn an internal nickname into a scientific concept or carry a novelty claim by renaming a known failure or mechanism. A provisional method name is acceptable only when the underlying difference is already substantive.
 
+Cluster nearest work by the scientific problem it tries to solve, not only by
+paper title or model family. For each cluster, state the shared limitation that
+remains after its strongest methods. That unresolved limitation is the input to
+problem selection; “nobody combined these modules” is not a problem.
+
 ## Establish external comparisons before multiplying methods
 
 Nearest work and experimental baselines overlap but are not identical. A paper may be crucial for novelty even when it cannot be run, while a simple baseline may be essential experimentally without being the nearest conceptual work. Record both roles.
@@ -125,9 +130,13 @@ Before calling a method promising or giving it a broad tuning budget, identify a
 Index the competitive comparison by adopted dataset. For each primary or
 generalization dataset, maintain the strongest recent top-conference
 protocol-match found for that dataset, its venue/year/source/search scope, and
-our result under the same protocol. A method may be the strongest comparator on
-several datasets, but each dataset keeps its own evidence row; never reuse one
-dataset's number as evidence for another.
+our result under the same protocol. Give the protocol its own typed status
+rather than hiding match or mismatch inside prose. The same row records source
+evidence or a concrete blocker for the dataset-origin result, recent
+top-conference comparator, a different published mechanism, and a strong simple
+baseline. A method may be the strongest comparator on several datasets, but
+each dataset keeps its own evidence row; never reuse one dataset's number as
+evidence for another.
 
 Verify task, prediction unit, dataset version, split, supervision, information available at inference, metric definition, and evaluation date. A larger published number under a different protocol is historical context, not an apples-to-apples winner. Label it `REPORTED_NOT_MATCHED`; reproduce or adapt decision-critical baselines under the current protocol when feasible.
 
@@ -141,6 +150,22 @@ a different protocol does not satisfy this role.
 If the current result table contains only our own methods, the scientific comparison is incomplete regardless of how many internal variants were tried. Prioritize external comparison work before generating more variants. Before calling a result paper-worthy, obtain at least the key protocol-matched comparison. When a key implementation is unavailable or too costly, record the exact blocker and the weakest defensible claim that remains.
 
 ## Derive the method from the problem
+
+Maintain a small paper-grade problem portfolio before multiplying methods. A
+problem is admissible to L2 only when it:
+
+- exposes a meaningful failure, contradiction, missing capability, estimand, or
+  empirical fact rather than a code/runtime inconvenience;
+- remains unresolved by the nearest-work cluster under the intended protocol;
+- supports a falsifiable prediction and a defensible contribution type such as
+  a mechanism, objective, estimand, diagnostic, theory, or empirical finding;
+- plausibly admits a mathematical intervention that follows from the stated
+  cause.
+
+Runtime failures, data plumbing, performance optimization, ordinary model
+configuration, hyperparameters, and bugs are L3 engineering work. Fix them
+autonomously. Escalate them into L2 only when the repaired evidence changes the
+scientific problem, mechanism conclusion, or active claim.
 
 Use this order:
 
@@ -163,13 +188,43 @@ The mathematics should match the intuition:
 - the formulation should predict a result that can fail;
 - every added component should have a direct role in the mechanism.
 
-Avoid method proposals whose identity is mainly a stack of adapters, routing, fusion, auxiliary losses, thresholds, or hand-selected weights. Complexity is acceptable only when each part follows from the same identified problem and can be tested against a simpler alternative. Prefer one clear mechanism over a collection of score-raising patches.
+Avoid method proposals whose identity is mainly a stack of adapters, routing,
+fusion, auxiliary losses, thresholds, hand-selected weights, expert weighted
+voting, or heuristic ensembles. Those may be L3 tools, controls, or baselines;
+they are not the L2 problem, core mechanism, or innovation. Complexity is
+acceptable only when each part follows from the same identified problem and can
+be tested against a simpler alternative. Prefer one clear mechanism over a
+collection of score-raising patches.
 
 Do not choose mathematics merely because it looks novel. If the intuition cannot be explained without equations, or the equations do not change the predicted failure pattern, the method premise is not ready.
 
+For each active problem, organize candidates into method clusters sharing one
+solution intuition and mathematical mechanism. Test a representative minimal
+member first. A different hyperparameter, backbone, implementation, or extra
+module is normally the same cluster, not a new scientific idea. A new cluster
+must change the causal intuition, optimized quantity, estimand, or falsifiable
+prediction.
+
+Close a method cluster only after implementation, baseline health, and a
+mechanism-sensitive diagnostic have been checked. If one cluster fails, try
+another paper-grade cluster for the same problem when justified. If the
+credible clusters for that problem are exhausted or the problem itself proves
+unimportant, mark the problem exhausted and choose another problem from the
+portfolio. Do not keep patching an exhausted cluster for score alone.
+
+Before G2, changing the active exploratory problem or method cluster within the
+confirmed L1 is autonomous but always requires a plain-language notification to
+the user with the previous and new stable IDs. After G2, replacing the confirmed
+problem or core method cluster also requires a new scoped PI decision.
+
 ## Potential screen and ceiling search
 
-Do not give every candidate a full tuning budget. First decide whether the method has enough potential to justify a ceiling search. Before closing a method as low-potential, verify that the implementation runs as intended, the comparison baseline is healthy, and at least one diagnostic capable of detecting the proposed mechanism was inspected. A weak first configuration alone is not enough to reject the idea.
+Do not give every method cluster a full tuning budget. First decide whether its
+representative candidate has enough potential to justify a ceiling search.
+Before closing the cluster as low-potential, verify that the implementation runs
+as intended, the comparison baseline is healthy, and at least one diagnostic
+capable of detecting the proposed mechanism was inspected. A weak first
+configuration alone is not enough to reject the idea.
 
 Before broad tuning begins, lock the primary metric, its `0–1` or `0–100`
 scale, and higher-is-better direction in the evaluation anchor. The agent owns
@@ -178,7 +233,7 @@ aggregation rule. If the anchor later changes, results tied only to its previous
 revision remain exploratory until they are rerun or explicitly reassessed under
 the new anchor.
 
-Treat a candidate as promising when most of the following hold:
+Treat a method cluster as promising when most of the following hold:
 
 - its mechanism directly addresses the observed problem;
 - a preliminary result or diagnostic moves in the direction predicted by that mechanism;
@@ -193,7 +248,7 @@ internal comparisons alone. Apply the canonical G3 numeric floor and
 protocol-matched comparison in [workflow.md](workflow.md); project-specific L1
 requirements may be stricter but cannot lower that floor.
 
-For a promising candidate, choose a project-appropriate ceiling-search budget
+For a promising method cluster, choose a project-appropriate ceiling-search budget
 based on the venue timeline, available compute, and the number of viable
 alternatives. Tune hyperparameters and other permitted implementation choices
 using available compute, including an existing GPU by default. Continue until
@@ -206,7 +261,10 @@ under the current project contract, not a universal upper bound or proof of
 generalization. Report the decision-relevant summary; do not require an archive
 of every attempt or the stopping rule.
 
-After the ceiling report and external comparison exist, ask the user whether this problem + core mechanism + innovation claim should become the active L2 scientific story. The tuning itself does not silently make that decision.
+After the ceiling report and external comparison exist, ask the user whether
+this problem + method cluster + core mechanism + innovation claim should become
+the active L2 scientific story. The tuning itself does not silently make that
+decision.
 
 Report a ceiling search to the user in plain language with:
 
@@ -222,7 +280,12 @@ The ceiling summary may say “promising but not paper-decision ready” when th
 external comparison is incomplete or the gain is below the floor. Do not turn a
 promising internal result into a paper recommendation by wording alone.
 
-If a candidate has no credible potential, stop before broad tuning and move on; no individual negative-result record is required. Surface the failure only when it changes the research compass, exhausts or materially narrows the candidate pool, invalidates a serious premise, or affects an item marked `FROZEN_BY_PI`.
+If a method cluster has no credible potential, stop before broad tuning and move
+to another justified cluster or problem; no individual negative-result record
+is required. Notify every problem or method-cluster switch. Surface additional
+failure detail only when it changes the research compass, exhausts or materially
+narrows the portfolio, invalidates a serious premise, or affects an item marked
+`FROZEN_BY_PI`.
 
 ## Candidate records by layer
 
@@ -232,8 +295,19 @@ nearest-work risk, external-baseline feasibility, cost, and recommendation. Do
 not create an L2 file for an unselected task-dataset pair. The shortlist also
 states the mandatory unexposed-dataset search result or its current blocker.
 
-After L1 confirmation, keep a compact L2 card only for a decision-relevant
-method or scientific-story candidate inside that direction:
+After L1 confirmation, maintain two compact L2 maps inside that direction:
+
+```text
+problem ID | status | nearest-work cluster | shared unresolved problem | scientific value | failure evidence | paper-grade rationale | next action
+problem ID | method-cluster ID | status | shared intuition | mathematical mechanism | falsifiable prediction | representative evidence | external-baseline gap | next action
+```
+
+These are selective scientific maps, not trial logs. Keep the active problem,
+credible alternatives, exhausted problem/cluster conclusions that affect the
+next choice, and anything shown to or decided by the user. L3 owns bugs,
+implementation variants, tuning runs, and routine repair notes.
+
+For a decision-relevant problem/method card, cover:
 
 ```text
 L1 已确认方向 reference：
@@ -244,6 +318,7 @@ L1 已确认方向 reference：
 候选创新点及与近邻工作的差异：
 第一个可证伪实验及潜力筛选证据：
 调参起点、当前最好结果与外部 baseline 差距（如适用）：
+问题 ID、方法簇 ID、状态及更换通知（如发生）：
 L2 科学主线决策来源（如已确认）：
 剩余论文证据缺口、预计时间和算力：
 ```
@@ -252,7 +327,9 @@ Keep a small ranked set rather than a long idea dump. Cheap data and baseline
 feasibility work may precede L1, but sustained method work starts only after L1
 confirmation. Preserve L2 cards that received a user decision or materially
 support the active scientific interpretation; L3 trial detail remains
-discretionary.
+discretionary. When a whole problem or method cluster is closed, retain only
+the compact conclusion needed to justify the next scientific choice, not every
+attempt or stopping rule.
 
 ## Downstream decision rule
 

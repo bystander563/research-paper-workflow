@@ -113,7 +113,8 @@ Gate `G1 L1_CONFIRMED`:
 - a queued approval is scoped to this direction ID and consumed only here;
 - the structured checkpoint contains task, dataset, competitive bar, novelty
   sufficiency, generalization requirement, additional paper-ready requirements,
-  and the unexposed-dataset search result;
+  the explicit adopted-dataset inventory with exactly one primary dataset, and
+  the unexposed-dataset search result;
 - the numeric paper-gain floor is recorded separately for G3; a project may
   raise but not lower the controller minimum;
 - descriptive paper-ready requirements may add conditions but cannot redefine
@@ -127,24 +128,36 @@ evidence standard invalidates G1 and requires another user decision.
 
 Within the confirmed L1 direction:
 
-1. map the nearest conceptual work from primary sources;
-2. identify the concrete failure or limitation to improve;
-3. build the external-baseline roster, indexed by adopted dataset;
-4. derive a problem -> intuition -> predicted change -> mathematics -> minimal
-   implementation chain;
-5. run a cheap falsifiable screen;
-6. give broad tuning only to candidates with credible potential;
-7. compare the resulting ceiling summary with real external methods.
+1. map nearest conceptual work from primary sources and group it by shared
+   scientific problem;
+2. build a compact portfolio of meaningful unresolved problems, keeping
+   engineering failures in L3;
+3. build the external-baseline roster, indexed by every adopted dataset;
+4. for an active problem, define one or more method clusters, each with a shared
+   intuition, mathematical mechanism, and falsifiable prediction;
+5. run a cheap representative screen for the active cluster;
+6. give broad tuning only to clusters with credible potential;
+7. compare the resulting ceiling summary with real external methods;
+8. when credible clusters for a problem are exhausted, notify the user and
+   select another paper-grade problem instead of accumulating score patches.
 
 The baseline roster must be identified and source-checked before broad tuning.
 Every adopted dataset has its own strongest recent top-conference comparator,
-venue/year/source/search scope, protocol-match status, and our matched result.
+venue/year/source/search scope, protocol-match status, and current result slot.
+The same row records source evidence or an explicit blocker for the dataset
+origin result, recent top-conference comparator, a different published
+mechanism, and a strong simple baseline.
 Do not reuse a comparator or score from a different dataset.
 The full matched local reproduction need not be complete at that moment. A
-`BLOCKED` or `BASELINE_INCOMPLETE` key comparison may coexist with L2 method
-work, but it cannot support a paper-worthy judgment or pass G3.
+roster row may be `IDENTIFIED` or `BLOCKED` while L2 method work proceeds, but
+only `MATCHED` rows can support a paper-worthy judgment or pass G3. Use
+`baseline-roster` to create or revise this structured roster. The command
+rejects missing, extra, or role-mismatched dataset rows, incomplete comparison
+roles, inconsistent protocol states, and an explicit protocol mismatch labeled
+as verified.
 
-Before broad tuning, use `evaluation-anchor` to lock the agent-selected primary
+After the roster covers every adopted dataset and before broad tuning, use
+`evaluation-anchor` to lock the agent-selected primary
 metric, its `0–1` or `0–100` scale, and higher-is-better direction. This does not
 create a PI question and does not impose a universal aggregation rule. Replacing
 the anchor is autonomous, but results tied only to the previous revision cannot
@@ -153,10 +166,14 @@ reassessed under the current revision.
 
 Prepare an L2 decision packet containing:
 
-- the observed problem and plain-language cause;
+- the nearest-work problem clusters and compact problem portfolio;
+- the active paper-grade problem ID, plain-language cause, and why this is a
+  scientific contribution rather than an engineering issue;
 - one concrete example of how a strong baseline fails;
-- solution intuition, predicted diagnostic, mathematical mechanism, and minimal
-  implementation;
+- the active method-cluster ID, solution intuition, predicted diagnostic,
+  mathematical mechanism, falsifiable prediction, and minimal implementation;
+- representative evidence for promising and exhausted problem/method clusters
+  only when it affects the next scientific choice;
 - proposed innovation claim and exact difference from nearest work;
 - external-baseline roster and comparability status;
 - our decision-relevant results and current-project ceiling summary;
@@ -167,12 +184,15 @@ trajectory, failed branch, or stopping rule.
 
 Gate `G2 L2_CONFIRMED`:
 
-- an explicit user decision promotes the identified problem + core mechanism +
-  innovation claim;
+- an explicit user decision promotes the identified problem + method cluster +
+  core mechanism + innovation claim;
+- the checkpoint stores the active problem ID, method-cluster ID, nearest-work
+  gap, paper-grade rationale, falsifiable prediction, and contribution type;
 - L2 links to its L1 direction, verified nearest work, external comparison, and
   decision-relevant result evidence;
 - the controller stores resolvable references to the nearest-work,
-  external-baseline, and result records used for the decision;
+  problem-portfolio, external-baseline, and result records used for the
+  decision;
 - unsupported or blocked comparisons are labeled rather than treated as wins;
 - the exact user decision is linked from L2 and its controller decision receipt.
 - the decision outcome is `select` or `approve`; `reject`, `defer`, and
@@ -181,15 +201,21 @@ Gate `G2 L2_CONFIRMED`:
   here.
 
 An implementation win or internally best variant never passes G2 by itself.
-Replacing the confirmed problem, core mechanism, or innovation claim invalidates
-G2 and requires another user decision.
+Expert weighted voting, heuristic fusion, module stacking, threshold tuning,
+and similar engineering combinations cannot be promoted as the L2 core
+mechanism. Before G2, every exploratory problem or method-cluster switch is a
+plain-language notification containing the previous and new stable IDs.
+Replacing the confirmed problem, method cluster,
+core mechanism, or innovation claim invalidates G2, creates the corresponding
+notification, and requires another scoped user decision.
 
 ## Stage 3: Evidence completion -> paper_ready_pending_pi
 
 Continue experiments inside the confirmed L1/L2 contract. Hyperparameters,
 routine metrics, implementation details, diagnostics, and bug repair remain
-agent-owned unless the user froze them. Notify model-family changes and any L3
-event that changes L1/L2 meaning.
+agent-owned L3 work unless the user froze them. Resolve engineering problems in
+L3 without presenting them as scientific pivots. Notify model-family changes
+and any L3 event that changes L1/L2 meaning.
 
 Assess the current package against the L1 evidence standard. Do not silently
 replace that standard because results are inconvenient. If a requirement is no
@@ -210,6 +236,11 @@ Gate `G3 PAPER_DECISION_READY`:
 - every adopted dataset has a `MATCHED` dataset-baseline row containing its own
   external comparator and our result; exactly one row is marked as the primary
   numeric comparison;
+- every `MATCHED` row has `VERIFIED_MATCH` protocol status, and its structured
+  comparison-role coverage includes source evidence or a concrete blocker;
+- the paper packet copies the current roster revision and payload hash; a later
+  roster change archives a bounded invalidation receipt and returns a pending
+  packet to `confirmed_project`;
 - on a higher-is-better primary metric, our result exceeds that baseline by at
   least the L1 floor, which can never be below 1 percentage point (`0.01` on a
   `0–1` scale or `1.0` on a `0–100` scale);
@@ -229,8 +260,9 @@ controller retains only the minimal acceptance receipt and its link to the
 assessment.
 
 Before asking the user, generate a readable project-local paper-decision report
-covering the current task, dataset, problem in current/nearest work, innovation, concrete
-method, final results, the per-dataset external-baseline matrix and primary
+covering the current task, adopted datasets, problem ID, method-cluster ID,
+problem in current/nearest work, innovation, concrete method, final results, the
+current roster revision/hash, per-dataset external-baseline matrix, and primary
 comparison dataset, baseline identity/venue/year/source and search scope,
 protocol-match evidence, the metric anchor and current-revision evidence,
 metric scale, baseline score, our score, computed point gain, required floor,
@@ -329,9 +361,9 @@ state-aware wakeup, not a fixed 20-minute research loop:
 1. set the next check from the job's expected completion or another meaningful
    state boundary; use the 20-minute mark only when an unanswered question
    leaves other authorized work to resume;
-2. run `status STATE --compact`; if `wakeup_changed_since_ack` is false and the
-   current job/result fingerprint equals
-   `last_acknowledged_artifact_fingerprint`, exit before loading the full
+2. run `status STATE --compact`; if `wakeup_changed_since_ack` is false and each
+   current job/result fingerprint equals that job's entry in
+   `acknowledged_artifact_fingerprints`, exit before loading the full
    state, literature, or scientific reasoning; a next-check reschedule alone
    must not trigger full analysis, while an unanswered question crossing the
    20-minute batching boundary changes the semantic fingerprint once;
@@ -339,8 +371,10 @@ state-aware wakeup, not a fixed 20-minute research loop:
    narrative report;
 4. when a result changed, analyze it, update the scientific state, and launch at
    most one next experiment batch; only after those writes succeed, read compact
-   status again, then run `monitor-ack` with its new wakeup fingerprint and the
-   current artifact fingerprint;
+   status again, then run `monitor-ack --job-id JOB --artifact-fingerprint ...`
+   with its new wakeup fingerprint for each processed job; omitting an artifact
+   update preserves existing job acknowledgements, while
+   `--clear-artifact-fingerprint` explicitly clears one job;
 5. schedule no next wakeup when the user stopped, `PAUSED_FOR_PI` or
    `PAUSED_BY_PI` is active,
    L1/L2 is invalid, the next action needs a macro decision or paid compute, no
@@ -363,7 +397,8 @@ current phase lacks a complete typed checkpoint, a decision receipt is unscoped
 or incorrectly reused, a core field has conflicting authorities, a required
 evidence reference or durable record is missing, a paper-ready assessment is
 incomplete or changed after its gate, a project checkpoint record is outside the project, a legacy
-approval needs audit, any audited instruction scope changed without a receipt,
+approval needs audit, the adopted-dataset roster is missing/stale/mismatched,
+any audited instruction scope changed without a receipt,
 non-self-referential L2 evidence changed after confirmation, or an active job
 cannot be resumed. It verifies provenance
 and availability, not scientific adequacy. `agents-audit` separately reports

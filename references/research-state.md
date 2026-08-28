@@ -86,7 +86,7 @@ they are not L1, L2, L3, or a replacement for the controller. They may tell an
 agent which active L1/L2 files or project truth sources to read, but must not
 copy their changing contents.
 
-The schema-v11 controller stores one project-local instruction-chain snapshot per
+The schema-v13 controller stores one project-local instruction-chain snapshot per
 audited working-directory scope plus a bounded set of update receipts containing
 paths, hashes, sizes, change classes, canonical compaction sources, reasons, and
 decision provenance. Scope-removal receipts are bounded separately; a missing
@@ -116,6 +116,9 @@ Record the research compass:
   never lower the numeric gain floor;
 - numeric paper-gain floor: at least 1 percentage point over the strongest
   recent top-conference protocol-matched baseline; a project may set it higher.
+- explicit adopted-dataset inventory: exactly one `primary` dataset plus every
+  user-adopted `supporting` dataset. A descriptive bundle name is not a
+  substitute for this list.
 
 Maintain a ranked table:
 
@@ -149,7 +152,8 @@ The L1 decision packet states, in plain language:
 Record the exact PI instruction in the controller decision receipt. Code or early results
 do not imply selection.
 
-The schema-v11 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v13 L1 checkpoint separately stores the selected task type, dataset,
+explicit adopted-dataset inventory,
 mandatory unexposed-dataset search result, four descriptive evidence-standard
 fields plus the numeric paper-gain floor,
 approving outcome, durable-record path, and the record hash at confirmation. A
@@ -162,9 +166,66 @@ current-direction and evidence-standard blocks with
 `STALE_AFTER_COMPASS_CHANGE`; it must not leave the old contract looking
 active.
 
-## Evaluation anchor
+## External-baseline roster and evaluation anchor
 
-Before broad tuning, the controller stores an agent-owned evaluation anchor
+After L1 confirmation, maintain the structured controller roster with
+`baseline-roster`. It has exactly one row for every adopted dataset and the same
+primary/supporting role. Each row stores baseline identity, venue/year, primary
+source, search scope, protocol evidence, typed protocol status, comparison-role
+coverage, metric/scale, score slots, and one of:
+
+- `IDENTIFIED`: the strongest eligible comparator has been source-checked;
+- `BLOCKED`: the comparator or protocol cannot currently be matched, with the
+  blocker retained in the L2 record;
+- `MATCHED`: baseline and our result are available under the stated protocol.
+
+Protocol status is `PENDING_MATCH`, `BLOCKED`, or `VERIFIED_MATCH` and must agree
+with the row status. A paper-gate row must be both `MATCHED` and
+`VERIFIED_MATCH`; explicit mismatch language cannot be labeled verified. Each
+row also contains exactly these comparison roles:
+
+- `dataset_origin`;
+- `recent_top_conference`;
+- `different_published_mechanism`;
+- `strong_simple`.
+
+Each role is `COVERED` with source evidence or `BLOCKED` with a concrete
+blocker. The recent top-conference role must be covered at G3; other genuine
+blockers narrow the claim and remain visible rather than disappearing.
+
+The JSON row accepted by `baseline-roster` uses this shape (scores may be
+`null` until the row becomes `MATCHED`):
+
+```json
+{
+  "dataset": "Dataset-A",
+  "role": "primary",
+  "baseline": "Method and paper identity",
+  "venue_year": "SIGIR 2026",
+  "source": "primary URL or project evidence reference",
+  "search_scope": "venues, years, and search date",
+  "protocol_match": "task/split/labels/input/metric/evaluation evidence",
+  "protocol_status": "PENDING_MATCH",
+  "comparison_roles": {
+    "dataset_origin": {"status": "COVERED", "evidence": "paper/source"},
+    "recent_top_conference": {"status": "COVERED", "evidence": "paper/source"},
+    "different_published_mechanism": {"status": "COVERED", "evidence": "paper/source"},
+    "strong_simple": {"status": "COVERED", "evidence": "method/result"}
+  },
+  "metric": "primary metric",
+  "metric_scale": "unit_interval",
+  "baseline_score": null,
+  "our_score": null,
+  "status": "IDENTIFIED"
+}
+```
+
+The roster may be revised when literature search finds a stronger eligible
+comparator or evidence changes. Each revision invalidates a pending paper packet
+but not routine L2 implementation work.
+
+Only after the roster exactly covers the adopted datasets, and before broad
+tuning, the controller stores an agent-owned evaluation anchor
 containing the active direction ID, primary metric, `0–1` or `0–100` scale,
 higher-is-better directionality, revision, reason, and lock time. It deliberately
 does not define a universal aggregation rule. Setting or replacing this anchor
@@ -184,7 +245,7 @@ L1 task, dataset, and evidence standard:
 Unexposed-dataset search:
 L1 confirmation source:
 L2 status:
-Active problem + method decision source:
+Active problem + method-cluster decision source:
 Last material update:
 ```
 
@@ -204,6 +265,44 @@ idea that never became decision-relevant need not enter L2. Once a candidate is
 presented for L2 confirmation, affects the active scientific interpretation, or
 receives a user decision, retain its compact conclusion even if implementation
 attempts are later discarded.
+
+### Paper-grade problem portfolio
+
+Group nearest work into clusters that share a scientific problem, then maintain:
+
+```text
+problem ID | status | nearest-work cluster | shared unresolved problem | scientific value | failure evidence | paper-grade rationale | next action
+```
+
+Useful statuses include `SCOUTING`, `ACTIVE_SCREEN`, `PROMISING`, `EXHAUSTED`,
+`CLOSED`, and `CONFIRMED_BY_PI`. Retain only problems that are credible
+alternatives, determine the next choice, or received a user decision. An L2
+problem must concern knowledge, capability, estimand, mechanism, diagnosis, or
+another paper contribution. Runtime, data plumbing, memory use, ordinary bugs,
+hyperparameters, and implementation inconvenience belong to L3.
+
+### Problem-linked method clusters
+
+For each active problem, group methods by shared solution intuition and
+mathematical mechanism:
+
+```text
+problem ID | method-cluster ID | status | shared intuition | mathematical mechanism | falsifiable prediction | representative evidence | external-baseline gap | next action
+```
+
+Useful statuses include `HYPOTHESIS`, `CHEAP_SCREEN`, `PROMISING`,
+`CEILING_SEARCH`, `EXHAUSTED`, and `CONFIRMED_BY_PI`. A hyperparameter,
+backbone, code path, or extra module does not create a new cluster unless the
+scientific mechanism or falsifiable prediction changes. Expert weighted voting,
+heuristic fusion, module stacking, threshold tuning, and similar combinations
+may be baselines or L3 tools, not the L2 core contribution.
+
+When a cluster is exhausted, keep its compact representative conclusion only if
+it affects the next scientific choice. Try another justified cluster for the
+same problem, or mark the problem exhausted and activate another portfolio
+problem. Record every problem/method-cluster switch as a plain-language
+notification with the previous and new stable IDs; replacing an already
+confirmed L2 selection also needs scoped PI approval.
 
 ### Problem-to-method chain
 
@@ -257,10 +356,11 @@ Maintain the decision-relevant external comparisons by dataset, not only by
 method. Every adopted primary or generalization dataset gets one current row:
 
 ```text
-dataset | role | strongest recent top-conference baseline | venue/year | primary source | venues/year range/search date | protocol match | metric/scale | baseline result | our matched result | MATCHED or BLOCKED
+dataset | role | strongest recent top-conference baseline | venue/year | primary source | venues/year range/search date | protocol evidence/status | comparison-role coverage/blockers | metric/scale | baseline result | our matched result | IDENTIFIED, BLOCKED, or MATCHED
 ```
 
-The baseline attached to one dataset does not establish competitiveness on
+Use `IDENTIFIED`, `BLOCKED`, or `MATCHED` for the controller roster. The
+baseline attached to one dataset does not establish competitiveness on
 another. Update the row when literature search finds a stronger eligible
 comparator or when a protocol repair changes either score.
 
@@ -307,15 +407,15 @@ method | version/run | protocol identity | main metric(s) | uncertainty/seeds | 
 An “ours versus ours” table may diagnose the mechanism, but it cannot satisfy
 the external-baseline gate or support a competitive claim.
 
-### Candidate and ceiling summary
+### Method-cluster and ceiling summary
 
-Maintain only a small set of decision-relevant methods:
+Maintain only a small set of decision-relevant method clusters:
 
 ```text
-method ID | status | mechanism | predicted diagnostic | cheap-screen evidence | external-baseline gap | best result | next action
+problem ID | method-cluster ID | status | mechanism | predicted diagnostic | representative cheap-screen evidence | external-baseline gap | best result | next action
 ```
 
-For each promising method that receives broad tuning, retain the scientific
+For each promising method cluster that receives broad tuning, retain the scientific
 summary:
 
 - why it qualified as promising;
@@ -330,14 +430,17 @@ or a recorded stopping rule. Those are L3 details and may be retained or
 discarded at agent discretion.
 
 After the ceiling summary and external comparison exist, create the L2
-scientific-story checkpoint. Ask whether to promote the problem + core mechanism
-+ innovation claim, keep it exploratory, or close it. The agent does not promote
+scientific-story checkpoint. Ask whether to promote the problem + method cluster
++ core mechanism + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v11 L2 checkpoint stores the active direction ID, problem, core
-mechanism, innovation claim, external-baseline status, ceiling summary,
+The schema-v13 L2 checkpoint stores the active direction ID, problem ID,
+method-cluster ID, problem, nearest-work gap, paper-grade rationale, core
+mechanism, falsifiable prediction, contribution type, innovation claim,
+external-baseline status, ceiling summary,
 approving outcome, durable-record path, and hashed references to the nearest-
-work, external-baseline, and result records used for the decision. A queued
+work, problem-portfolio, external-baseline, and result records used for the
+decision. A queued
 approval is bound to this scientific-story ID and consumed once. A question
 with outcome `reject`, `defer`, or `informational` cannot be used as
 confirmation.
@@ -353,12 +456,12 @@ Do not ask the user whether to write the paper until a project-local report has
 been generated and the configured gain floor passes. The report is a readable
 decision packet, not just a pointer to experiment logs. It must contain:
 
-1. current task and dataset;
-2. problem in current/nearest work;
-3. innovation and core mechanism;
+1. current task, descriptive dataset bundle, and explicit adopted datasets;
+2. problem in current/nearest work plus its problem ID;
+3. innovation, core mechanism, and method-cluster ID;
 4. concrete method;
 5. final decision-relevant results;
-6. a per-dataset matrix linking every adopted dataset to its own strongest
+6. the current baseline-roster revision/hash and a per-dataset matrix linking every adopted dataset to its own strongest
    recent top-conference baseline and our matched result, plus the dataset used
    for the headline numeric comparison;
 7. strongest recent top-conference protocol-matched baseline, venue/year,
@@ -375,7 +478,8 @@ decision packet, not just a pointer to experiment logs. It must contain:
 13. narrowest supported claim, remaining objection, and necessary versus
     optional work.
 
-The controller copies L1 task/dataset and L2 problem/innovation/mechanism into
+The controller copies L1 task/adopted datasets and L2 problem/method-cluster/
+innovation/mechanism into
 the report receipt, checks numeric arithmetic and the floor, ties it to the
 active checkpoint IDs, and content-locks both the file and structured payload.
 A queued paper decision must be created and answered after this receipt; the
@@ -406,6 +510,13 @@ of detail, grouping, and retention. Routine hyperparameter trials, resolved
 failures, superseded exploratory runs, protocol-error artifacts, and stopping
 notes may be omitted or removed unless the user or project requires them.
 
+Engineering problems are resolved here autonomously: crashes, data loading,
+memory/runtime performance, ordinary model configuration, hyperparameters,
+metrics plumbing, and routine bug repair. Do not elevate them into L2 to create
+an innovation story. If a repair changes the sample, label, estimand, model
+family, baseline gap, mechanism conclusion, or another scientific meaning,
+propagate that effect upward and notify the user in plain language.
+
 Long-running jobs that must survive context compaction should also be registered
 in the controller with a command or session ID, status, meaningful next check,
 and concrete next action. Active records missing either scheduling field fail
@@ -416,6 +527,7 @@ Regardless of retention, propagate changes in scientific meaning upward:
 
 - invalidate affected L2 result rows when a bug changes their support;
 - notify model-family changes in plain language;
+- notify every scientific problem or method-cluster switch in plain language;
 - update L2 when a repair changes the baseline gap or mechanism conclusion;
 - create a PI question only when the repair requires changing confirmed L1/L2;
 - do not treat a crash or protocol error as evidence that a scientific idea
@@ -447,9 +559,9 @@ headline claim.
 
 ## Legacy-state audit
 
-Schema-v1 through schema-v10 states are readable. Unstructured L1/L2 approvals,
+Schema-v1 through schema-v12 states are readable. Unstructured L1/L2 approvals,
 unscoped decision questions, or schema-v4 L2 checkpoints without evidence
-references are marked for audit and do not satisfy schema-v11 gates. Schema-v5
+references are marked for audit and do not satisfy schema-v13 gates. Schema-v5
 scientific checkpoints retain their meaning while receiving an instruction-
 maintenance state during migration. Schema-v6 instruction snapshots migrate to
 the matching scope, and decision questions receive ordered target revisions so
@@ -462,8 +574,19 @@ receipt and explicit missing-evidence markers during migration. That legacy
 anchor cannot pass the paper gate: return to `confirmed_project`, lock the
 metric again, and rebuild the assessment with actual stability evidence.
 Schema-v10 paper packets without the per-dataset baseline matrix return to
-`confirmed_project`; L1/L2 remain active, but the paper report and approval must
-be rebuilt under schema v11.
+`confirmed_project`. Schema-v11 states migrate their monitor artifact receipt to
+a legacy unscoped field. A valid locked per-dataset paper matrix may seed the
+schema-v12 adopted-dataset inventory and baseline roster; otherwise the L1
+inventory must be normalized only when unambiguous or reconfirmed by the PI.
+Legacy L2 science must be reconfirmed with a paper-grade problem ID,
+method-cluster ID, falsifiable prediction, contribution type, and
+problem-portfolio evidence. Any obsolete paper packet leaves a bounded
+invalidation receipt containing its durable path and gate hashes rather than
+silently disappearing.
+Schema-v12 baseline rows did not structurally separate protocol status from
+free text or enumerate comparison-role coverage. Migration labels those fields
+`LEGACY_UNVERIFIED`, archives any pending paper packet, and requires a revised
+roster before the evaluation anchor or G3 can be used again.
 Existing scoped approvals
 already linked from a checkpoint are migrated as consumed by that checkpoint;
 do not silently turn an unrelated old summary into new user approval. Run
