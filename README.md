@@ -31,6 +31,7 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 - content-locks both the paper-ready report file and its structured payload, requires the paper question to be created and answered after that report, and binds the approval to the current report receipt;
 - keeps compass/L1/L2/paper fields as single sources of truth, protects additional frozen choices from silent replacement, and preserves material L1/L2 decision history;
 - keeps `AGENTS.md` as a bounded stable contract and router, retains separate compare-only snapshots for audited scopes, and records instruction changes without copying dynamic research state into it;
+- treats an edited `AGENTS.md` as next-run guidance because Codex loads the instruction chain once per run;
 - routes semantic instruction changes through the same scoped five-question PI queue while treating verified path repairs and meaning-preserving compaction as notifications;
 - audits legacy state instead of silently treating older unstructured approvals as complete;
 - hands a user-approved research package to a separate submission workflow instead of mixing exploration with drafting and review.
@@ -72,12 +73,13 @@ For long-running work, the skill can maintain:
 
 ```text
 <project>/.codex/research-paper-workflow.json
+<project>/.codex/research-paper-workflow.json.lock  # controller mutex; no research content
 <project>/.codex/research/L1-directions.md
 <project>/.codex/research/L2/D001.md
 <project>/.codex/research/L3/D001.md  # optional agent/project-managed index
 ```
 
-The schema-v10 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, the revisioned evaluation anchor, legal phases, structured paper-ready assessment and gain arithmetic, recent notifications, resumable active jobs, pause state, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. It can prune audit scopes for deleted directories while requiring PI approval to remove coverage from a directory that still exists. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. Compass or direction changes also mark invalidated L1/L2 current-state blocks visibly stale. L2 confirmation records the L1 evidence standard plus resolvable nearest-work, external-baseline, and result references. The paper gate requires current-anchor and project-appropriate stability evidence, then generates and content-locks a readable decision report before the user's paper decision. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
+The schema-v10 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, the revisioned evaluation anchor, legal phases, structured paper-ready assessment and gain arithmetic, recent notifications, resumable active jobs, pause state, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. It serializes mutating commands with an adjacent lock so scheduled and interactive tasks cannot silently overwrite each other's state. It can prune audit scopes for deleted directories while requiring PI approval to remove coverage from a directory that still exists. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. Compass or direction changes also mark invalidated L1/L2 current-state blocks visibly stale. L2 confirmation records the L1 evidence standard plus resolvable nearest-work, external-baseline, and result references. The paper gate requires current-anchor and project-appropriate stability evidence, then generates and content-locks a readable decision report before the user's paper decision. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
 
 Existing projects may retain `.codex/research-ledger.md` as read-only history and create the layered files at the next material checkpoint.
 
@@ -113,17 +115,21 @@ python scripts/research_queue.py reopen STATE --id Q002 --reason "外部 baselin
 python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --unexposed-dataset-search "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..." --minimum-paper-gain-points 1
 python scripts/research_queue.py evaluation-anchor STATE --primary-metric "..." --metric-scale unit_interval --metric-direction higher_is_better --reason "..."
 python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
-python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --recent-top-conference-baseline "..." --baseline-venue-year "SIGIR 2025" --baseline-search-scope "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28" --baseline-source "..." --protocol-match-evidence "..." --evaluation-anchor-evidence "..." --stability-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
+python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --recent-top-conference-baseline "..." --baseline-venue-year "..." --baseline-search-scope "<venues> <year-range>; searched <YYYY-MM-DD>" --baseline-source "..." --protocol-match-evidence "..." --evaluation-anchor-evidence "..." --stability-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
 python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
-python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-action "..."
+python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-poll "..." --next-action "..."
+python scripts/research_queue.py status STATE --compact
 python scripts/research_queue.py status STATE
 ```
 
 The controller cannot keep a Codex task alive by itself. When unattended
 monitoring is explicitly requested, use the host scheduled-task mechanism as a
-compact state-aware wakeup at the next meaningful time, and stop future wakeups
-at workflow stop conditions. If scheduling is unavailable, the job registry
-makes the work recoverable when a task resumes.
+compact state-aware wakeup at the next meaningful time. Read `status --compact`
+and compare its semantic `wakeup_fingerprint` before the full research state;
+rescheduling alone does not change that fingerprint, while a pending question
+crossing the 20-minute batching boundary changes it once. Stop future wakeups at
+workflow stop conditions. If scheduling is unavailable, the job registry makes
+the work recoverable when a task resumes.
 
 ## Validation
 

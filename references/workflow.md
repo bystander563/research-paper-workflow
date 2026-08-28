@@ -198,6 +198,10 @@ Gate `G3 PAPER_DECISION_READY`:
 - G1 and G2 remain valid;
 - a current evaluation anchor is tied to the active L1 direction and the scored
   result is tied to that anchor revision;
+- the comparison roster covers the dataset-origin anchor, the strongest recent
+  top-conference comparator, a different published mechanism, and a strong
+  simple baseline whenever those roles are applicable; any missing role has an
+  explicit blocker and correspondingly narrower claim;
 - a primary source identifies the strongest recent top-conference baseline found
   for the same protocol, and the report explains the task, dataset/split, labels,
   supervision/inference information, metric, and evaluation match;
@@ -287,12 +291,18 @@ Register every long-running process that must survive context compaction with:
 - stable job ID and plain-language purpose;
 - reproducible command and/or terminal/session ID;
 - `queued` or `running` state;
-- next poll time and next action.
+- a meaningful next-check time and a concrete resumable next action.
 
 Update it to `completed`, `failed`, `blocked`, or `cancelled` when appropriate,
 then remove the record when it no longer helps recovery. This is a live L3
 index, not a mandatory run archive. The controller records resumability; it does
 not schedule, poll, or terminate the process by itself.
+
+Mutating controller commands for one state file are serialized by a small
+adjacent lock file. If another task holds the lock, exit and retry after that
+command finishes; never bypass the lock or use a tight polling loop. This
+prevents an interactive task and a scheduled wakeup from silently overwriting
+each other's questions, decisions, notifications, or job updates.
 
 ### Unattended scheduled wakeups
 
@@ -303,8 +313,11 @@ state-aware wakeup, not a fixed 20-minute research loop:
 1. set the next check from the job's expected completion or another meaningful
    state boundary; use the 20-minute mark only when an unanswered question
    leaves other authorized work to resume;
-2. read the compact controller state and job/result fingerprint before loading
-   literature or performing scientific reasoning;
+2. run `status STATE --compact` and compare its semantic
+   `wakeup_fingerprint` plus the job/result fingerprint before loading the full
+   state, literature, or scientific reasoning; a next-check reschedule alone
+   must not trigger full analysis, while an unanswered question crossing the
+   20-minute batching boundary changes the semantic fingerprint once;
 3. when nothing changed, update the next meaningful check and exit without a
    narrative report;
 4. when a result changed, analyze it, update the scientific state, and launch at
@@ -312,6 +325,11 @@ state-aware wakeup, not a fixed 20-minute research loop:
 5. schedule no next wakeup when the user stopped, `PAUSED_FOR_PI` is active,
    L1/L2 is invalid, the next action needs a macro decision or paid compute, no
    authorized work remains, or G3 is reached.
+
+For desktop-local work, the machine and app must remain available. Give the
+scheduled task only the permissions needed for the known project command,
+artifact check, and workflow-state update; do not broaden access merely to
+avoid a failed background run.
 
 A failed experiment alone is not a stop condition when another authorized,
 promising action remains. If scheduled tasks are unavailable, preserve the job

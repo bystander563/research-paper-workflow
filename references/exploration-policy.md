@@ -19,6 +19,8 @@ rather than creating a second copy of the compass field.
 When updating only the venue/window or domain, carry the current optional
 starting concept forward. Clear it only with the user's explicit instruction;
 the controller exposes `--clear-starting-concept` for that distinction.
+Changing or clearing only this optional seed leaves an already confirmed L1/L2
+contract intact; it is inspiration, not a hidden direction replacement.
 
 Verify current venue timing and scope before spending heavily, because conference dates and calls change. Do not silently redirect the work to a different venue or domain merely because another benchmark is easier.
 
@@ -112,7 +114,7 @@ Use established field terms from primary literature, benchmark definitions, or o
 
 Nearest work and experimental baselines overlap but are not identical. A paper may be crucial for novelty even when it cannot be run, while a simple baseline may be essential experimentally without being the nearest conceptual work. Record both roles.
 
-Before calling a method promising or giving it a broad tuning budget, identify and source-check a baseline roster from primary sources. Local reproduction of every item need not already be complete. The roster should normally include:
+Before calling a method promising or giving it a broad tuning budget, identify and source-check a baseline roster from primary sources. Local reproduction of every item need not already be complete. The roster must include each applicable role below; when a role genuinely does not exist or cannot be used, record the blocker and the weaker claim that remains:
 
 - the dataset paper's official reference result or method when available;
 - the strongest recent protocol-comparable published method found for the task and dataset;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -489,6 +490,20 @@ class ResearchQueueCLITest(unittest.TestCase):
             stored["paper_ready_assessment"]["recorded_at"],
         )
         self.run_cli("audit", self.state)
+        paper_question = next(
+            question
+            for question in stored["macro_questions"]
+            if question.get("id") == paper_source.get("question_id")
+        )
+        paper_question["created_at"] = "2020-01-01T00:00:00+00:00"
+        self.state.write_text(json.dumps(stored), encoding="utf-8")
+        receipt_audit = json.loads(
+            self.run_cli("audit", self.state, ok=False).stdout
+        )
+        self.assertIn(
+            "PAPER_DECISION_RECEIPT_NOT_BOUND",
+            {issue["code"] for issue in receipt_audit["control_issues"]},
+        )
         paper_source["paper_assessment_payload_sha256"] = "tampered-binding"
         self.state.write_text(json.dumps(stored), encoding="utf-8")
         audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
@@ -820,6 +835,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             "session-1",
             "--status",
             "running",
+            "--next-poll",
+            "after the current run should finish",
+            "--next-action",
+            "inspect the result artifact",
         )
         for index in range(5):
             self.run_cli(
@@ -1533,6 +1552,45 @@ class ResearchQueueCLITest(unittest.TestCase):
             "UNSET",
         )
 
+    def test_optional_concept_only_change_preserves_confirmed_l1_l2(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_evaluation_anchor()
+
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "compass",
+            "--id",
+            "C002",
+            "--record",
+            self.l1,
+            "--pi-decision",
+            "Add this as an optional idea without changing the project",
+            "--pi-outcome",
+            "approve",
+            "--venue-or-window",
+            "ICASSP",
+            "--domain",
+            "structural MRI",
+            "--starting-concept",
+            "try a reliability-weighted view",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["phase"], "confirmed_project")
+        self.assertEqual(
+            state["layer_checkpoints"]["direction"]["status"], "CONFIRMED_BY_PI"
+        )
+        self.assertEqual(
+            state["layer_checkpoints"]["science"]["status"], "CONFIRMED_BY_PI"
+        )
+        self.assertIsNotNone(state["evaluation_anchor"])
+        self.run_cli("audit", self.state)
+
     def test_checkpoint_history_does_not_duplicate_stale_science(self) -> None:
         self.init_exploration()
         self.confirm_direction(self.add_answer("direction", "Choose D001?", outcome="select"))
@@ -1707,6 +1765,89 @@ class ResearchQueueCLITest(unittest.TestCase):
             for issue in json.loads(audit.stdout)["control_issues"]
         }
         self.assertIn("RESERVED_FIELD_DUPLICATED_IN_FROZEN_BY_PI", codes)
+
+    def test_additional_frozen_fields_have_one_normalized_identity(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "freeze",
+            self.state,
+            "--key",
+            "Model Family",
+            "--value",
+            "Transformer",
+            "--pi-decision",
+            "Keep the Transformer family fixed",
+            "--pi-outcome",
+            "approve",
+        )
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(list(stored["frozen_by_pi"]), ["model_family"])
+
+        self.run_cli(
+            "freeze",
+            self.state,
+            "--key",
+            "model-family",
+            "--value",
+            "CNN",
+            "--pi-decision",
+            "Replace the frozen model family with CNN",
+            "--pi-outcome",
+            "approve",
+        )
+        replaced = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(list(replaced["frozen_by_pi"]), ["model_family"])
+        self.assertEqual(replaced["frozen_by_pi"]["model_family"]["value"], "CNN")
+
+        queued = self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "other",
+            "--target",
+            "frozen:Analysis Plan",
+            "--text",
+            "Freeze the analysis plan?",
+        )
+        queued_payload = json.loads(queued.stdout)["added"]
+        self.assertEqual(queued_payload["decision_target"], "frozen:analysis_plan")
+        self.run_cli(
+            "answer",
+            self.state,
+            "--id",
+            queued_payload["id"],
+            "--decision",
+            "Keep this analysis plan fixed",
+            "--outcome",
+            "approve",
+        )
+        self.run_cli(
+            "freeze",
+            self.state,
+            "--key",
+            "analysis-plan",
+            "--value",
+            "Plan A",
+            "--decision-id",
+            queued_payload["id"],
+        )
+        replaced = json.loads(self.state.read_text(encoding="utf-8"))
+
+        replaced["frozen_by_pi"]["model family"] = {
+            "value": "duplicate",
+            "frozen_at": "2026-01-01T00:00:00+00:00",
+            "decision_source": {
+                "type": "direct_pi_instruction",
+                "decision": "duplicate legacy entry",
+                "outcome": "approve",
+            },
+        }
+        self.state.write_text(json.dumps(replaced), encoding="utf-8")
+        audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
+        self.assertIn(
+            "DUPLICATE_FROZEN_FIELD_IDENTITY",
+            {issue["code"] for issue in audit["control_issues"]},
+        )
 
     def test_paper_ready_requires_structured_assessment(self) -> None:
         self.init_exploration()
@@ -1910,6 +2051,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "python run.py",
             "--status",
             "running",
+            "--next-poll",
+            "2026-08-28T12:00:00+00:00",
             "--next-action",
             "poll result",
         )
@@ -1927,6 +2070,162 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("job-remove", self.state, "--id", "J001")
         summary = json.loads(self.run_cli("status", self.state).stdout)
         self.assertEqual(summary["active_jobs"], [])
+
+    def test_active_job_requires_next_check_and_action(self) -> None:
+        self.init_exploration()
+        missing_check = self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "baseline run",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-action",
+            "inspect the result",
+            ok=False,
+        )
+        self.assertIn("requires --next-poll", missing_check.stderr)
+
+        self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "baseline run",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-poll",
+            "after the estimated finish",
+            "--next-action",
+            "inspect the result",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["jobs"][0]["next_action"] = ""
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
+        self.assertIn(
+            "ACTIVE_JOB_NEXT_ACTION_MISSING",
+            {issue["code"] for issue in audit["control_issues"]},
+        )
+
+    def test_state_lock_rejects_overlapping_controller_command(self) -> None:
+        self.init_exploration()
+        spec = importlib.util.spec_from_file_location("research_queue_lock_test", SCRIPT)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with module.state_file_lock(self.state):
+            status = self.run_cli("status", self.state)
+            self.assertEqual(json.loads(status.stdout)["project"], "demo")
+            blocked = self.run_cli(
+                "notify",
+                self.state,
+                "--text",
+                "must not overwrite concurrent state",
+                ok=False,
+            )
+        self.assertIn("Workflow state is busy", blocked.stderr)
+        self.run_cli("notify", self.state, "--text", "recorded after lock release")
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [item["text"] for item in stored["notifications"]],
+            ["recorded after lock release"],
+        )
+
+    def test_compact_status_omits_research_payload_and_question_text(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "direction",
+            "--target",
+            "direction:D001",
+            "--text",
+            "Choose the detailed task and dataset packet?",
+        )
+        self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "baseline run",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-poll",
+            "after the estimated finish",
+            "--next-action",
+            "inspect the result artifact",
+        )
+        compact = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        self.assertEqual(compact["pending_macro_ids"], ["Q001"])
+        self.assertEqual(compact["active_jobs"][0]["next_action"], "inspect the result artifact")
+        self.assertEqual(len(compact["state_sha256"]), 64)
+        self.assertEqual(len(compact["wakeup_fingerprint"]), 64)
+        self.assertNotIn("layer_checkpoints", compact)
+        self.assertNotIn("pending_macro_questions", compact)
+        self.assertNotIn("notifications", compact)
+        self.assertNotIn("Choose the detailed task", json.dumps(compact))
+
+        self.run_cli(
+            "job-update",
+            self.state,
+            "--id",
+            "J001",
+            "--next-poll",
+            "one hour later",
+        )
+        rescheduled = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        self.assertNotEqual(rescheduled["state_sha256"], compact["state_sha256"])
+        self.assertEqual(
+            rescheduled["wakeup_fingerprint"], compact["wakeup_fingerprint"]
+        )
+
+        self.run_cli(
+            "job-update",
+            self.state,
+            "--id",
+            "J001",
+            "--next-action",
+            "analyze the completed artifact",
+        )
+        changed_action = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        self.assertNotEqual(
+            changed_action["wakeup_fingerprint"],
+            rescheduled["wakeup_fingerprint"],
+        )
+
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["macro_questions"][0]["created_at"] = "2000-01-01T00:00:00+00:00"
+        self.state.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        aged_question = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        self.assertTrue(aged_question["any_pending_over_20_minutes"])
+        self.assertNotEqual(
+            aged_question["wakeup_fingerprint"],
+            changed_action["wakeup_fingerprint"],
+        )
 
     def test_agents_audit_discovers_effective_chain_and_size_review(self) -> None:
         root_agents = self.root / "AGENTS.md"
@@ -2414,6 +2713,55 @@ class ResearchQueueCLITest(unittest.TestCase):
                 ok=False,
             )
         self.assertIn("must stay inside", result.stderr)
+
+    def test_checkpoint_record_cannot_reuse_controller_or_agents_file(self) -> None:
+        self.init_exploration()
+        question = self.add_answer("direction", "Choose D001?", outcome="select")
+        common = [
+            "confirm",
+            self.state,
+            "--layer",
+            "direction",
+            "--id",
+            "D001",
+            "--decision-id",
+            question,
+            "--task-type",
+            "task",
+            "--dataset",
+            "data",
+            "--unexposed-dataset-search",
+            "candidate data-2 found",
+            "--competitive-bar",
+            "bar",
+            "--novelty-sufficiency",
+            "novel",
+            "--generalization-requirement",
+            "none",
+            "--paper-ready-threshold",
+            "threshold",
+        ]
+        state_record = self.run_cli(
+            *common,
+            "--record",
+            self.state,
+            ok=False,
+        )
+        self.assertIn("cannot reuse the workflow state", state_record.stderr)
+        json.loads(self.state.read_text(encoding="utf-8"))
+
+        agents = self.root / "AGENTS.md"
+        agents.write_text("stable project instructions\n", encoding="utf-8")
+        agents_record = self.run_cli(
+            *common,
+            "--record",
+            agents,
+            ok=False,
+        )
+        self.assertIn("cannot be written into project AGENTS", agents_record.stderr)
+        self.assertEqual(
+            agents.read_text(encoding="utf-8"), "stable project instructions\n"
+        )
 
     def test_external_science_evidence_is_read_only_and_allowed(self) -> None:
         self.init_exploration()

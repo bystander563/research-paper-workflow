@@ -35,6 +35,7 @@ When project writes are authorized, use:
     D001.md
     D002.md
 <project>/.codex/research-paper-workflow.json
+<project>/.codex/research-paper-workflow.json.lock  # controller mutex; no research content
 ```
 
 `research_queue.py init` creates `L1-directions.md` and the `L2/` directory.
@@ -46,7 +47,13 @@ outcome, user decision, and structured payload to the supplied L1/L2/paper
 record, then stores that record's hash in the controller. Checkpoint and
 paper-ready assessment records must stay inside the project. Evidence references
 may point to external files, but the controller reads and hashes them without
-modifying them.
+modifying them. Never reuse the workflow JSON, its lock/temp files, or a project
+`AGENTS.md`/`AGENTS.override.md` as a scientific checkpoint or assessment record.
+
+The adjacent lock file serializes mutating controller commands from interactive
+and scheduled tasks. It contains no scientific state and may remain present
+between runs. A busy lock means another controller command is active; retry
+after it finishes instead of bypassing the controller.
 
 For evidence stored outside the live L2 record, a later hash change invalidates
 the confirmed scientific checkpoint until the evidence is reassessed and L2 is
@@ -98,7 +105,8 @@ Record the research compass:
 
 - target submission window and/or venue, including whether frozen or tentative;
 - domain;
-- user-supplied starting concept and whether it is frozen;
+- user-supplied starting concept and any separately named user-frozen
+  constraint that makes it central;
 - mandatory unexposed-dataset search result, feasibility, and recommendation;
 - competitive target, such as SOTA, near-SOTA, or another user-defined bar;
 - novelty sufficiency standard;
@@ -232,7 +240,8 @@ resemblance, or model memory is not enough for a novelty decision.
 
 External means another published method or conventional comparator, not a new
 dataset. Identify and source-check the roster before broad ceiling tuning. It
-normally contains:
+must contain every applicable role below; record an explicit blocker and the
+weaker remaining claim when a role genuinely does not exist or cannot be run:
 
 1. **Dataset-origin anchor:** the dataset paper's official result or method.
 2. **Recent top-conference comparator:** the strongest recent top-conference
@@ -384,9 +393,10 @@ failures, superseded exploratory runs, protocol-error artifacts, and stopping
 notes may be omitted or removed unless the user or project requires them.
 
 Long-running jobs that must survive context compaction should also be registered
-in the controller with a command or session ID, status, next poll, and next
-action. This job registry is live recovery state and may be pruned after a job
-finishes; it is not a required experiment archive.
+in the controller with a command or session ID, status, meaningful next check,
+and concrete next action. Active records missing either scheduling field fail
+the control audit. This job registry is live recovery state and may be pruned
+after a job finishes; it is not a required experiment archive.
 
 Regardless of retention, propagate changes in scientific meaning upward:
 

@@ -96,6 +96,9 @@ supersedes every older unconsumed approval.
 - Project checkpoint and assessment records must be project-local. External
   literature or evidence artifacts may be referenced read-only.
 - `AGENTS.md` is a bounded stable contract and router, not research state.
+- Project instructions are discovered once per Codex run. After changing an
+  `AGENTS.md` file, keep following the instruction chain already loaded for the
+  current run; treat the recorded file as active guidance from the next run.
 
 ## Activate or resume
 
@@ -105,7 +108,8 @@ start, continue, run, iterate, or monitor.
 Before open-ended exploration, obtain a user-confirmed venue/submission window
 and domain. An optional idea is a seed unless the user explicitly freezes an
 additional constraint around it. When changing only venue/domain, preserve the
-current optional idea unless the user explicitly clears it.
+current optional idea unless the user explicitly clears it. Changing or clearing
+only that optional seed does not invalidate an already confirmed L1/L2 story.
 
 Resolve `<controller>` as `scripts/research_queue.py` relative to the directory
 containing this `SKILL.md`, not the active research project's working
@@ -203,16 +207,25 @@ once. Notifications never count toward the cap.
 
 Continue independent authorized work while questions are unanswered. At five
 active PI decisions, set `PAUSED_FOR_PI` and stop at the next safe checkpoint.
-Register long-running work that must survive context compaction. When the user
-explicitly requests unattended monitoring and the host supports scheduled
+Register long-running work that must survive context compaction with a
+reproducible command or session, a meaningful next-check time, and a concrete
+next action. When the user explicitly requests unattended monitoring and the
+host supports scheduled
 tasks, use a scheduled task only as a state-aware wakeup: choose the next
 meaningful check time from job progress or the 20-minute question window, read
-compact durable state first, and avoid full reasoning when nothing changed.
+`status STATE --compact` first, and avoid loading the full scientific state or
+reasoning when its `wakeup_fingerprint` and the job/result fingerprint did not
+change. A mere reschedule changes the exact state hash but not this semantic
+wakeup fingerprint; an unanswered question crossing the 20-minute batching
+boundary changes it once.
 Pause or stop future wakeups before costly work when the user stops, five PI
 questions are active, L1/L2 is invalid, a macro choice or paid compute is
 required, or the paper gate is reached. If scheduled tasks are unavailable,
-fall back to the job registry and resume when a task is opened again. The
-controller records recovery state but does not itself schedule or poll.
+fall back to the job registry and resume when a task is opened again. For a
+desktop-local project, monitoring also depends on the computer and app
+remaining available; use the narrowest permissions that can run the known
+project command and update its scoped state. The controller records recovery
+state but does not itself schedule or poll.
 
 When the user asks what the agent is doing, challenges the rationale, or wants
 to discuss an in-progress method, run a read-only drift check. Trace the current

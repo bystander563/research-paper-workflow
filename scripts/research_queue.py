@@ -18,6 +18,7 @@ import math
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,58 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+@contextmanager
+def state_file_lock(state_path: Path):
+    """Serialize controller commands that target the same workflow state.
+
+    Scheduled wakeups and an interactive Codex task can otherwise read the same
+    state revision and silently overwrite each other's updates. A separate
+    advisory lock file remains beside the JSON state so replacing the JSON does
+    not replace the locked inode or Windows file handle.
+    """
+
+    resolved_state = state_path.resolve()
+    lock_path = resolved_state.with_name(resolved_state.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    locked = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except (OSError, BlockingIOError) as exc:
+            raise SystemExit(
+                "Workflow state is busy in another controller command. Do not "
+                "bypass the lock or retry in a tight loop; read it again after "
+                "the active command finishes."
+            ) from exc
+        yield
+    finally:
+        if locked:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
 def validate_checkpoint_id(raw: str) -> str:
     value = str(raw or "")
     if not CHECKPOINT_ID_PATTERN.fullmatch(value):
@@ -313,6 +366,16 @@ def paper_assessment_payload_sha256(assessment: dict[str, Any]) -> str:
     payload = {
         field: assessment.get(field) for field in PAPER_ASSESSMENT_PAYLOAD_FIELDS
     }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def canonical_payload_sha256(payload: Any) -> str:
     canonical = json.dumps(
         payload,
         ensure_ascii=False,
@@ -882,6 +945,22 @@ def normalize_project_record(path: Path, raw: str) -> tuple[Path, str, str]:
     record = record.resolve()
     if not record.is_file():
         raise SystemExit(f"Checkpoint record does not exist: {record}")
+    state_path = path.resolve()
+    protected_controller_paths = {
+        state_path,
+        state_path.with_name(state_path.name + ".lock"),
+        state_path.with_name(state_path.name + ".tmp"),
+    }
+    if record in protected_controller_paths:
+        raise SystemExit(
+            "Checkpoint and assessment records cannot reuse the workflow state, "
+            "lock, or temporary state path"
+        )
+    if record.name in AGENTS_FILENAMES:
+        raise SystemExit(
+            "Checkpoint and assessment records cannot be written into project "
+            "AGENTS instructions"
+        )
     project_root = project_root_for_state(path).resolve()
     try:
         stored = record.relative_to(project_root).as_posix()
@@ -915,7 +994,25 @@ def evidence_reference(state_path: Path, raw: str, label: str) -> dict[str, str]
 
 
 def normalized_frozen_key(raw: str) -> str:
-    return str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    value = re.sub(r"[-\s]+", "_", str(raw).strip().lower())
+    return re.sub(r"_+", "_", value).strip("_")
+
+
+def resolved_frozen_key(state: dict[str, Any], raw: str) -> str:
+    normalized = normalized_frozen_key(raw)
+    if not normalized:
+        raise SystemExit("A frozen field requires a non-empty --key")
+    matches = [
+        key
+        for key in state.get("frozen_by_pi", {})
+        if normalized_frozen_key(key) == normalized
+    ]
+    if len(matches) > 1:
+        raise SystemExit(
+            f"Frozen field {raw!r} is ambiguous because existing keys normalize to "
+            f"the same identity: {matches}"
+        )
+    return matches[0] if matches else normalized
 
 
 def append_checkpoint_receipt(
@@ -1300,6 +1397,50 @@ def timestamp_at_or_after(candidate: Any, boundary: Any) -> bool:
     return candidate_time >= boundary_time
 
 
+def answered_question_binding_usable(
+    state: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    expected_layer: str | None,
+    expected_target: str,
+    expected_consumer: dict[str, Any],
+    not_before: str | None = None,
+    require_decision_text_match: bool = True,
+) -> bool:
+    if source.get("type") != "answered_question" or not source.get("question_id"):
+        return False
+    matches = [
+        question
+        for question in state.get("macro_questions", [])
+        if question.get("id") == source.get("question_id")
+    ]
+    if len(matches) != 1:
+        return False
+    question = matches[0]
+    if (
+        question.get("status") != "ANSWERED"
+        or question.get("decision_target") != expected_target
+        or question.get("outcome") not in APPROVING_OUTCOMES
+        or source.get("outcome") != question.get("outcome")
+    ):
+        return False
+    if expected_layer is not None and question.get("layer") != expected_layer:
+        return False
+    if require_decision_text_match and source.get("decision") != question.get(
+        "decision"
+    ):
+        return False
+    consumed = question.get("consumed_by") or {}
+    if any(consumed.get(key) != value for key, value in expected_consumer.items()):
+        return False
+    if not_before is not None and (
+        not timestamp_at_or_after(question.get("created_at"), not_before)
+        or not timestamp_at_or_after(question.get("answered_at"), not_before)
+    ):
+        return False
+    return True
+
+
 def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
     checkpoint = state["layer_checkpoints"].get(layer, {})
     if checkpoint.get("status") != "CONFIRMED_BY_PI":
@@ -1427,11 +1568,6 @@ def seed_selection_risk_acceptance_usable(
     ):
         return False
     if source.get("type") == "answered_question":
-        matches = [
-            question
-            for question in state.get("macro_questions", [])
-            if question.get("id") == source.get("question_id")
-        ]
         expected = {
             "type": "seed_selection_risk",
             "science_id": assessment.get("science_id"),
@@ -1439,9 +1575,17 @@ def seed_selection_risk_acceptance_usable(
                 "evaluation_anchor_revision"
             ),
         }
-        if not matches or any(
-            (matches[0].get("consumed_by") or {}).get(key) != value
-            for key, value in expected.items()
+        expected_target = (
+            f"paper:seed-selection-risk:{assessment.get('science_id')}:"
+            f"anchor-{assessment.get('evaluation_anchor_revision')}"
+        )
+        if not answered_question_binding_usable(
+            state,
+            source,
+            expected_layer="paper",
+            expected_target=expected_target,
+            expected_consumer=expected,
+            require_decision_text_match=False,
         ):
             return False
     return True
@@ -1655,19 +1799,22 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and source.get(
             "type"
         ) == "answered_question":
-            matches = [
-                q
-                for q in state["macro_questions"]
-                if q.get("id") == source.get("question_id")
-            ]
             expected = {
                 "type": "checkpoint",
                 "layer": layer,
                 "id": checkpoint.get("id"),
             }
-            if not matches or any(
-                (matches[0].get("consumed_by") or {}).get(key) != value
-                for key, value in expected.items()
+            if not answered_question_binding_usable(
+                state,
+                source,
+                expected_layer=layer,
+                expected_target=f"{layer}:{checkpoint.get('id')}",
+                expected_consumer=expected,
+                not_before=(
+                    (state.get("paper_ready_assessment") or {}).get("recorded_at")
+                    if layer == "paper"
+                    else None
+                ),
             ):
                 add(
                     f"{layer.upper()}_DECISION_RECEIPT_NOT_BOUND",
@@ -1790,12 +1937,68 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0",
                 "Paper-ready assessment changed after the gate; reassess it before seeking or using PI approval",
             )
-    for key in state.get("frozen_by_pi", {}):
+    normalized_frozen: dict[str, str] = {}
+    for key, entry in state.get("frozen_by_pi", {}).items():
+        normalized_key = normalized_frozen_key(key)
+        if not normalized_key:
+            add(
+                "INVALID_FROZEN_FIELD_KEY",
+                "P0",
+                "A frozen field has an empty key",
+            )
+            continue
+        previous_key = normalized_frozen.get(normalized_key)
+        if previous_key is not None:
+            add(
+                "DUPLICATE_FROZEN_FIELD_IDENTITY",
+                "P0",
+                f"Frozen fields {previous_key!r} and {key!r} normalize to the same identity",
+            )
+        else:
+            normalized_frozen[normalized_key] = key
         if normalized_frozen_key(key) in RESERVED_FROZEN_KEYS:
             add(
                 "RESERVED_FIELD_DUPLICATED_IN_FROZEN_BY_PI",
                 "P0",
                 f"Core scientific field {key!r} must live only in compass/L1/L2 state",
+            )
+        if not isinstance(entry, dict) or not str(entry.get("value") or "").strip():
+            add(
+                "FROZEN_FIELD_VALUE_INVALID",
+                "P0",
+                f"Frozen field {key!r} has no non-empty value",
+            )
+            continue
+        source = entry.get("decision_source") or {}
+        if source.get("outcome") not in APPROVING_OUTCOMES or not source.get(
+            "decision"
+        ):
+            add(
+                "FROZEN_FIELD_DECISION_INVALID",
+                "P0",
+                f"Frozen field {key!r} lacks an approving PI decision receipt",
+            )
+        elif source.get("type") == "answered_question" and not any(
+            answered_question_binding_usable(
+                state,
+                source,
+                expected_layer=None,
+                expected_target=target,
+                expected_consumer={
+                    "type": "frozen_field",
+                    "key": key,
+                    "action": "freeze",
+                },
+            )
+            for target in {
+                f"frozen:{normalized_frozen_key(key)}",
+                f"frozen:{key}",
+            }
+        ):
+            add(
+                "FROZEN_FIELD_DECISION_NOT_BOUND",
+                "P0",
+                f"Frozen field {key!r} is not bound to its scoped PI decision",
             )
     maintenance = state.get("instruction_maintenance") or {}
     for update in maintenance.get("recent_updates", []):
@@ -1842,19 +2045,17 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                     f"Semantic instruction update for {update.get('path')!r} lacks PI approval",
                 )
             if source.get("type") == "answered_question":
-                matches = [
-                    q
-                    for q in state["macro_questions"]
-                    if q.get("id") == source.get("question_id")
-                ]
                 expected = {
                     "type": "instruction_update",
                     "path": update.get("path"),
                     "after_sha256": update.get("after_sha256"),
                 }
-                if not matches or any(
-                    (matches[0].get("consumed_by") or {}).get(key) != value
-                    for key, value in expected.items()
+                if not answered_question_binding_usable(
+                    state,
+                    source,
+                    expected_layer="instructions",
+                    expected_target=f"instructions:{update.get('path')}",
+                    expected_consumer=expected,
                 ):
                     add(
                         "INSTRUCTION_DECISION_RECEIPT_NOT_BOUND",
@@ -1877,18 +2078,18 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                     f"Removal of existing instruction scope {removal.get('scope_cwd')!r} lacks PI approval",
                 )
             if source.get("type") == "answered_question":
-                matches = [
-                    q
-                    for q in state["macro_questions"]
-                    if q.get("id") == source.get("question_id")
-                ]
                 expected = {
                     "type": "instruction_scope_remove",
                     "scope_key": removal.get("scope_key"),
                 }
-                if not matches or any(
-                    (matches[0].get("consumed_by") or {}).get(key) != value
-                    for key, value in expected.items()
+                if not answered_question_binding_usable(
+                    state,
+                    source,
+                    expected_layer="instructions",
+                    expected_target=(
+                        "instructions-scope:" + str(removal.get("scope_key") or "")
+                    ),
+                    expected_consumer=expected,
                 ):
                     add(
                         "INSTRUCTION_SCOPE_DECISION_RECEIPT_NOT_BOUND",
@@ -1981,6 +2182,22 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "ACTIVE_JOB_NOT_RESUMABLE",
                 "P1",
                 f"Active job {job_id} has neither a command nor a session identifier",
+            )
+        if job.get("status") in ACTIVE_JOB_STATUSES and not str(
+            job.get("next_poll") or ""
+        ).strip():
+            add(
+                "ACTIVE_JOB_NEXT_CHECK_MISSING",
+                "P1",
+                f"Active job {job_id} has no next meaningful check time",
+            )
+        if job.get("status") in ACTIVE_JOB_STATUSES and not str(
+            job.get("next_action") or ""
+        ).strip():
+            add(
+                "ACTIVE_JOB_NEXT_ACTION_MISSING",
+                "P1",
+                f"Active job {job_id} has no resumable next action",
             )
     return issues
 
@@ -2141,6 +2358,105 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
+    pending = active_questions(state)
+    pending_ages = [
+        age
+        for age in (age_minutes(question.get("created_at", "")) for question in pending)
+        if age is not None
+    ]
+    any_pending_over_20_minutes = any(age >= 20.0 for age in pending_ages)
+    issues = audit_state(state_path, state)
+    checkpoint_status = {
+        layer: {
+            "id": state["layer_checkpoints"][layer].get("id"),
+            "status": state["layer_checkpoints"][layer].get("status"),
+        }
+        for layer in CHECKPOINT_LAYERS
+    }
+    active_jobs = [
+        {
+            "id": job.get("id"),
+            "status": job.get("status"),
+            "session": job.get("session"),
+            "next_poll": job.get("next_poll"),
+            "next_action": job.get("next_action"),
+            "updated_at": job.get("updated_at"),
+        }
+        for job in state.get("jobs", [])
+        if job.get("status") in ACTIVE_JOB_STATUSES
+    ]
+    issue_codes = [issue["code"] for issue in issues]
+    recent_instruction_updates = (
+        (state.get("instruction_maintenance") or {}).get("recent_updates") or []
+    )
+    wakeup_signal = {
+        "phase": state["phase"],
+        "status": state["status"],
+        "checkpoint_payloads": {
+            layer: {
+                "id": state["layer_checkpoints"][layer].get("id"),
+                "status": state["layer_checkpoints"][layer].get("status"),
+                "payload": state["layer_checkpoints"][layer].get("payload"),
+            }
+            for layer in CHECKPOINT_LAYERS
+        },
+        "evaluation_anchor": state.get("evaluation_anchor"),
+        "paper_assessment_payload_sha256": (
+            (state.get("paper_ready_assessment") or {}).get(
+                "payload_sha256_at_gate"
+            )
+        ),
+        "open_questions": [
+            {
+                "id": question.get("id"),
+                "status": question.get("status"),
+                "target": question.get("decision_target"),
+                "target_revision": question.get("target_revision"),
+                "response_count": len(question.get("responses") or []),
+            }
+            for question in active_questions(state) + deferred_questions(state)
+        ],
+        "any_pending_over_20_minutes": any_pending_over_20_minutes,
+        "active_jobs": [
+            {
+                "id": job.get("id"),
+                "status": job.get("status"),
+                "session": job.get("session"),
+                "next_action": job.get("next_action"),
+            }
+            for job in state.get("jobs", [])
+            if job.get("status") in ACTIVE_JOB_STATUSES
+        ],
+        "frozen_by_pi": state.get("frozen_by_pi"),
+        "latest_instruction_update": (
+            recent_instruction_updates[-1] if recent_instruction_updates else None
+        ),
+        "control_issue_codes": issue_codes,
+    }
+    return {
+        "schema_version": state["schema_version"],
+        "project": state["project"],
+        "phase": state["phase"],
+        "status": state["status"],
+        "paused_for_pi": state["paused_for_pi"],
+        "state_sha256": sha256_file(state_path),
+        "wakeup_fingerprint": canonical_payload_sha256(wakeup_signal),
+        "updated_at": state["updated_at"],
+        "pending_macro_count": len(pending),
+        "pending_macro_ids": [question.get("id") for question in pending],
+        "any_pending_over_20_minutes": any_pending_over_20_minutes,
+        "deferred_pi_count": len(deferred_questions(state)),
+        "checkpoint_status": checkpoint_status,
+        "evaluation_anchor_revision": (
+            (state.get("evaluation_anchor") or {}).get("revision")
+        ),
+        "paper_ready_assessment_present": bool(state.get("paper_ready_assessment")),
+        "active_jobs": active_jobs,
+        "control_issue_codes": issue_codes,
+    }
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     path = Path(args.state)
     if path.exists():
@@ -2211,7 +2527,8 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
-    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
+    summary = compact_state_summary(path, state) if args.compact else state_summary(path, state)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def cmd_audit(args: argparse.Namespace) -> None:
@@ -2236,6 +2553,11 @@ def cmd_question(args: argparse.Namespace) -> None:
     target = str(args.target).strip()
     if not target:
         raise SystemExit("A PI decision question requires a stable --target")
+    if target.startswith("frozen:"):
+        frozen_target = normalized_frozen_key(target.split(":", 1)[1])
+        if not frozen_target:
+            raise SystemExit("A frozen-field decision target requires a non-empty key")
+        target = f"frozen:{frozen_target}"
     question_text = str(args.text).strip()
     if not question_text:
         raise SystemExit("A PI decision question requires non-empty --text")
@@ -3385,11 +3707,20 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         "record_sha256_at_confirmation": digest,
     }
     if args.layer == "compass":
-        invalidate_evaluation_anchor(state, "compass_change", args.id)
-        for layer in ("direction", "science", "paper"):
-            invalidate_checkpoint(path, state, layer, "compass_change", args.id)
-        state["paper_ready_assessment"] = None
-        state["phase"] = "exploration"
+        previous_payload = previous.get("payload") or {}
+        scope_changed = (
+            previous.get("status") != "CONFIRMED_BY_PI"
+            or previous_payload.get("venue_or_window") != payload["venue_or_window"]
+            or previous_payload.get("domain") != payload["domain"]
+        )
+        if scope_changed:
+            invalidate_evaluation_anchor(state, "compass_change", args.id)
+            for layer in ("direction", "science", "paper"):
+                invalidate_checkpoint(path, state, layer, "compass_change", args.id)
+            state["paper_ready_assessment"] = None
+            state["phase"] = "exploration"
+        elif state["phase"] == "discussion":
+            state["phase"] = "exploration"
     elif args.layer == "direction":
         invalidate_evaluation_anchor(state, "direction_change", args.id)
         for layer in ("science", "paper"):
@@ -3576,7 +3907,18 @@ def cmd_phase(args: argparse.Namespace) -> None:
 
 def decision_source_for_freeze(state: dict[str, Any], args: argparse.Namespace) -> dict[str, str]:
     if args.decision_id:
-        expected_target = f"frozen:{args.key}"
+        expected_target = f"frozen:{normalized_frozen_key(args.key)}"
+        matches = [
+            question
+            for question in state.get("macro_questions", [])
+            if question.get("id") == args.decision_id
+        ]
+        if len(matches) == 1:
+            recorded_target = str(matches[0].get("decision_target") or "")
+            if recorded_target.startswith("frozen:") and normalized_frozen_key(
+                recorded_target.split(":", 1)[1]
+            ) == normalized_frozen_key(args.key):
+                expected_target = recorded_target
         question = current_answered_approval(
             state,
             args.decision_id,
@@ -3604,6 +3946,10 @@ def decision_source_for_freeze(state: dict[str, Any], args: argparse.Namespace) 
 def cmd_freeze(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
+    args.key = resolved_frozen_key(state, args.key)
+    args.value = str(args.value).strip()
+    if not args.value:
+        raise SystemExit("A frozen field requires a non-empty --value")
     if normalized_frozen_key(args.key) in RESERVED_FROZEN_KEYS:
         raise SystemExit(
             "Core compass/L1/L2 fields cannot be duplicated in frozen_by_pi; "
@@ -3641,6 +3987,7 @@ def cmd_freeze(args: argparse.Namespace) -> None:
 def cmd_unfreeze(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
+    args.key = resolved_frozen_key(state, args.key)
     if args.key not in state["frozen_by_pi"]:
         raise SystemExit(f"Frozen key not found: {args.key}")
     source = decision_source_for_freeze(state, args)
@@ -3678,6 +4025,10 @@ def cmd_job_add(args: argparse.Namespace) -> None:
         raise SystemExit(f"Job already exists: {job_id}")
     if args.status in ACTIVE_JOB_STATUSES and not (args.command or args.session):
         raise SystemExit("An active job requires --command or --session")
+    if args.status in ACTIVE_JOB_STATUSES and not str(args.next_poll or "").strip():
+        raise SystemExit("An active job requires --next-poll at a meaningful check time")
+    if args.status in ACTIVE_JOB_STATUSES and not str(args.next_action or "").strip():
+        raise SystemExit("An active job requires a non-empty --next-action")
     job = {
         "id": job_id,
         "description": description,
@@ -3714,6 +4065,14 @@ def cmd_job_update(args: argparse.Namespace) -> None:
             job[field] = value
     if job.get("status") in ACTIVE_JOB_STATUSES and not (job.get("command") or job.get("session")):
         raise SystemExit("An active job requires a command or session identifier")
+    if job.get("status") in ACTIVE_JOB_STATUSES and not str(
+        job.get("next_poll") or ""
+    ).strip():
+        raise SystemExit("An active job requires a meaningful next check time")
+    if job.get("status") in ACTIVE_JOB_STATUSES and not str(
+        job.get("next_action") or ""
+    ).strip():
+        raise SystemExit("An active job requires a resumable next action")
     job["updated_at"] = now_iso()
     save_state(path, state)
     print(json.dumps({"updated": job, "state": state_summary(path, state)}, ensure_ascii=False, indent=2))
@@ -3769,8 +4128,13 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--pi-outcome", choices=sorted(APPROVING_OUTCOMES))
     init_parser.set_defaults(func=cmd_init)
 
-    status_parser = subparsers.add_parser("status", help="Show compact state and control issues")
+    status_parser = subparsers.add_parser("status", help="Show workflow state and control issues")
     status_parser.add_argument("state")
+    status_parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Show only wakeup-critical state, hashes, jobs, and issue codes",
+    )
     status_parser.set_defaults(func=cmd_status)
 
     audit_parser = subparsers.add_parser("audit", help="Fail when workflow control issues exist")
@@ -4075,7 +4439,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    state_path = Path(args.state)
+    if args.command in {"status", "audit"} or (
+        args.command != "init" and not state_path.exists()
+    ):
+        args.func(args)
+    else:
+        with state_file_lock(state_path):
+            args.func(args)
     return 0
 
 

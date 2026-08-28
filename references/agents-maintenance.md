@@ -5,7 +5,7 @@ changing a project `AGENTS.md` or `AGENTS.override.md`. These files are a stable
 operating contract and router. They are not another research-state layer.
 
 The canonical Codex discovery and precedence behavior is documented in the
-[OpenAI AGENTS.md guide](https://developers.openai.com/codex/guides/agents-md).
+[OpenAI AGENTS.md guide](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 This workflow audits the project-local portion of that chain; global Codex
 instructions may consume additional instruction budget.
 
@@ -115,6 +115,12 @@ canonical file where possible. Do not keep an AGENTS change log inside
 The controller stores hashes, sizes, reasons, and a user-readable notification,
 not instruction contents. It retains only the 20 most recent update receipts
 and counts compacted older receipts.
+
+Codex discovers the instruction chain once per run. Recording an instruction
+change does not reload the current agent's prompt. Continue the current run
+under the chain it started with; if the new rule matters immediately, rely on
+the user's current instruction or owning checkpoint now, and treat the edited
+file as active project guidance from the next run.
 
 It keeps a separate snapshot for every audited working-directory scope. A later
 audit of `docs/` therefore cannot erase the baseline for `src/`. Once a scope

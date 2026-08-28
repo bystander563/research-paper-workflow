@@ -174,7 +174,8 @@ again in the next decision packet. Do not silently answer it from the condition
 itself.
 
 Register long-running active work with `job-add` and update it with `job-update`
-so another context can recover its command/session and next action. The
+so another context can recover its command/session, next meaningful check, and
+next action. Active records missing either scheduling field are incomplete. The
 controller blocks a new active job and active-to-active polling or advancement
 while paused. An existing job may only be recorded at a safe terminal status:
 `completed`, `failed`, `cancelled`, or `blocked`. It does not itself schedule or
@@ -197,8 +198,11 @@ fixed 20-minute research loop:
 1. choose the next meaningful wake time from expected job progress or a known
    decision boundary; the 20-minute mark is relevant only to an unanswered
    question's batching/revisit condition;
-2. inspect compact controller state, job status, and an artifact or process
-   fingerprint before loading literature or doing full analysis;
+2. run `status STATE --compact`, compare its `wakeup_fingerprint`, then inspect
+   the job and an artifact or process fingerprint before loading the full
+   state, literature, or analysis; a next-check reschedule alone is not a
+   meaningful change, while an unanswered question crossing the 20-minute
+   batching boundary changes the fingerprint once;
 3. if nothing changed, update the next useful check and exit without repeating
    reasoning or producing a report;
 4. if evidence changed, analyze it and launch at most one next authorized
@@ -210,6 +214,9 @@ fixed 20-minute research loop:
 A failed experiment alone is not a stop condition when an already authorized,
 promising alternative remains. If scheduled tasks are unavailable, keep the
 job registry and next action current so a later task can resume safely.
+Desktop-local monitoring requires the machine and app to remain available.
+Use the narrowest permission mode that can run the known project command, read
+its result fingerprint, and update the scoped workflow state.
 
 ## Execution defaults
 
@@ -268,10 +275,11 @@ operations are:
 
 ```text
 python <controller> status STATE
+python <controller> status STATE --compact
 python <controller> question STATE --layer direction --target direction:D001 --text "..."
 python <controller> answer STATE --id Q001 --decision "..." --outcome select
 python <controller> answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "..."
-python <controller> job-add STATE --id J001 --description "..." --command "..." --status running
+python <controller> job-add STATE --id J001 --description "..." --command "..." --status running --next-poll "..." --next-action "..."
 ```
 
 Use `freeze` and `unfreeze` for additional user-fixed fields. Direct decisions
