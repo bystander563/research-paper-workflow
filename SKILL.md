@@ -25,7 +25,7 @@ user confirms venue/time + domain (+ optional idea)
 -> tune only promising methods to estimate their current-project ceiling
 -> USER L2: promote problem + core mechanism + innovation claim
 -> complete the L1 evidence standard
--> beat the strongest recent top-conference protocol-matched baseline by >=1 point
+-> clear the canonical G3 matched-baseline gain floor
 -> generate the paper-decision report
 -> USER PAPER: enter writing + select headline claim
 -> hand off the fixed package to the submission workflow
@@ -34,7 +34,8 @@ user confirms venue/time + domain (+ optional idea)
 L1/L2/L3 describe what information is maintained. `discussion`, `exploration`,
 `confirmed_project`, `paper_ready_pending_pi`, and
 `paper_handoff_approved` describe when work happens. Instruction maintenance
-and `PAUSED_FOR_PI` are overlays, not scientific layers or approvals.
+and `PAUSED_FOR_PI`/`PAUSED_BY_PI` are overlays, not scientific layers or
+approvals.
 
 ## User authority
 
@@ -48,6 +49,7 @@ The user decides:
 - paid compute or rental;
 - project-specific acceptance of favorable-seed selection risk;
 - entry into paper writing and the headline claim;
+- direct pause/resume and withdrawal of an approved paper handoff;
 - external submission, publication, or sending.
 
 The agent may scout candidates, inspect data, reproduce baselines, run cheap
@@ -80,6 +82,11 @@ supersedes every older unconsumed approval.
   L1 and the agent-owned project metric in the evaluation anchor.
 - External baselines are published methods or conventional comparators, not
   another dataset. Keep them separate from internal variants.
+- Maintain a dataset-indexed external-baseline row for every adopted dataset:
+  identify the strongest recent top-conference protocol-match found for that
+  dataset, keep its venue/year/source/search scope, and compare our method with
+  that dataset's own baseline. Never carry one dataset's score or comparator
+  across to another dataset.
 - Before broad tuning, the agent must lock the higher-is-better primary metric,
   its `0–1` or `0–100` scale, and its direction in the controller. This is an
   agent-owned protocol anchor, not a new PI question. Replacing it invalidates
@@ -88,11 +95,9 @@ supersedes every older unconsumed approval.
 - Do not impose a universal aggregation rule, seed count, or significance test.
   The paper report must contain project-appropriate repeat, uncertainty, or
   stability evidence.
-- “Ready for a paper decision” has a hard numeric floor: on the higher-is-better
-  primary metric, the method must beat the strongest recent top-conference
-  protocol-matched baseline by at least 1 percentage point. Interpret this as
-  `0.01` on a `0–1` scale or `1.0` on a `0–100` scale. L1 may set a stricter
-  floor, never a lower one.
+- “Ready for a paper decision” must clear the canonical numeric floor in
+  [workflow G3](references/workflow.md).
+  L1 may set a stricter floor, never a lower one.
 - Project checkpoint and assessment records must be project-local. External
   literature or evidence artifacts may be referenced read-only.
 - `AGENTS.md` is a bounded stable contract and router, not research state.
@@ -136,8 +141,8 @@ fit, the result of the unexposed-dataset search, and a recommendation. Ask the
 user to select the task-dataset pair and set the competitive bar, novelty
 sufficiency, generalization/second-dataset expectation, and additional
 paper-ready requirements. These descriptive requirements may add conditions
-but cannot lower the separately stored numeric paper-gain floor of at least 1
-percentage point. “Not required” and “decide later” are user choices for
+but cannot lower the separately stored canonical G3 numeric paper-gain floor.
+“Not required” and “decide later” are user choices for
 adoption, not permission to skip the search or lower this competitive floor.
 
 Cheap verification may continue while waiting. Sustained method search and
@@ -156,6 +161,8 @@ the metric name, scale, or direction later does not require PI approval, but the
 old anchor's results cannot directly satisfy the paper gate.
 
 L2 must link resolvable nearest-work, external-baseline, and result evidence.
+Its baseline record maintains one row per adopted dataset and keeps the external
+comparator and our matched result together.
 The best internal variant never becomes the story automatically. Changing L2
 requires a new scoped decision.
 
@@ -169,7 +176,8 @@ gain floor.
 
 First create a project-local paper-decision report containing the current task,
 dataset, problem in current/nearest work, innovation, concrete method, final
-results, baseline identity/venue/year/source and literature-search scope,
+results, a per-dataset baseline matrix, the primary comparison dataset,
+baseline identity/venue/year/source and literature-search scope,
 protocol-match evidence, the locked metric and scale, evidence tied to the
 current anchor, baseline and our score, computed point gain, required floor,
 project-appropriate stability evidence, every other L1 criterion, the narrowest
@@ -207,15 +215,26 @@ once. Notifications never count toward the cap.
 
 Continue independent authorized work while questions are unanswered. At five
 active PI decisions, set `PAUSED_FOR_PI` and stop at the next safe checkpoint.
+The user may explicitly pause all execution without filling the five-question
+queue; use the controller's `pause`/`resume` commands and do no active work while
+`PAUSED_BY_PI`. If an approved paper handoff is withdrawn, use `paper-revoke`;
+retain L1/L2, clear the paper authorization, and require a rebuilt report and a
+new paper decision.
+
 Register long-running work that must survive context compaction with a
 reproducible command or session, a meaningful next-check time, and a concrete
 next action. When the user explicitly requests unattended monitoring and the
 host supports scheduled
 tasks, use a scheduled task only as a state-aware wakeup: choose the next
 meaningful check time from job progress or the 20-minute question window, read
-`status STATE --compact` first, and avoid loading the full scientific state or
-reasoning when its `wakeup_fingerprint` and the job/result fingerprint did not
-change. A mere reschedule changes the exact state hash but not this semantic
+`status STATE --compact` first, compare `wakeup_changed_since_ack`, and compare
+the current job/result artifact fingerprint with the stored acknowledged one.
+Avoid loading the full scientific state or reasoning when neither changed.
+After successfully processing a change, persist both with `monitor-ack`; do not
+acknowledge before the resulting state is safely recorded. If processing
+changed workflow state, read compact status again and acknowledge the new
+fingerprint, not the pre-processing one. A mere reschedule
+changes the exact state hash but not this semantic
 wakeup fingerprint; an unanswered question crossing the 20-minute batching
 boundary changes it once.
 Pause or stop future wakeups before costly work when the user stops, five PI

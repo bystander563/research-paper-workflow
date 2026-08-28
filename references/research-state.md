@@ -86,7 +86,7 @@ they are not L1, L2, L3, or a replacement for the controller. They may tell an
 agent which active L1/L2 files or project truth sources to read, but must not
 copy their changing contents.
 
-The schema-v10 controller stores one project-local instruction-chain snapshot per
+The schema-v11 controller stores one project-local instruction-chain snapshot per
 audited working-directory scope plus a bounded set of update receipts containing
 paths, hashes, sizes, change classes, canonical compaction sources, reasons, and
 decision provenance. Scope-removal receipts are bounded separately; a missing
@@ -149,7 +149,7 @@ The L1 decision packet states, in plain language:
 Record the exact PI instruction in the controller decision receipt. Code or early results
 do not imply selection.
 
-The schema-v10 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v11 L1 checkpoint separately stores the selected task type, dataset,
 mandatory unexposed-dataset search result, four descriptive evidence-standard
 fields plus the numeric paper-gain floor,
 approving outcome, durable-record path, and the record hash at confirmation. A
@@ -253,6 +253,17 @@ weaker remaining claim when a role genuinely does not exist or cannot be run:
    mechanism is needed.
 5. **Internal controls:** variants and ablations in a separate block.
 
+Maintain the decision-relevant external comparisons by dataset, not only by
+method. Every adopted primary or generalization dataset gets one current row:
+
+```text
+dataset | role | strongest recent top-conference baseline | venue/year | primary source | venues/year range/search date | protocol match | metric/scale | baseline result | our matched result | MATCHED or BLOCKED
+```
+
+The baseline attached to one dataset does not establish competitiveness on
+another. Update the row when literature search finds a stronger eligible
+comparator or when a protocol repair changes either score.
+
 Use:
 
 ```text
@@ -274,8 +285,8 @@ every local reproduction must already be complete. Before a paper-worthy claim,
 the strongest recent top-conference protocol-matched comparison must exist;
 `BLOCKED` means the paper gate cannot pass. Check task, split, labels,
 supervision, inference information, metric, and evaluation date before ranking
-numbers. On the higher-is-better primary metric, our result must exceed it by at
-least the L1 point floor, never below 1 percentage point.
+numbers. Apply the canonical numeric rule from
+[workflow G3](workflow.md).
 
 ### Result matrix
 
@@ -323,7 +334,7 @@ scientific-story checkpoint. Ask whether to promote the problem + core mechanism
 + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v10 L2 checkpoint stores the active direction ID, problem, core
+The schema-v11 L2 checkpoint stores the active direction ID, problem, core
 mechanism, innovation claim, external-baseline status, ceiling summary,
 approving outcome, durable-record path, and hashed references to the nearest-
 work, external-baseline, and result records used for the decision. A queued
@@ -347,18 +358,21 @@ decision packet, not just a pointer to experiment logs. It must contain:
 3. innovation and core mechanism;
 4. concrete method;
 5. final decision-relevant results;
-6. strongest recent top-conference protocol-matched baseline, venue/year,
-   primary source, and literature-search venues/year range/date;
-7. protocol-match evidence covering task, data/split, labels,
+6. a per-dataset matrix linking every adopted dataset to its own strongest
+   recent top-conference baseline and our matched result, plus the dataset used
+   for the headline numeric comparison;
+7. strongest recent top-conference protocol-matched baseline, venue/year,
+   primary source, and literature-search venues/year range/date for that primary row;
+8. protocol-match evidence covering task, data/split, labels,
    supervision/inference information, metric, and evaluation procedure;
-8. current evaluation-anchor revision and evidence that the scored result was
+9. current evaluation-anchor revision and evidence that the scored result was
    produced or reassessed under it;
-9. higher-is-better primary metric and scale (`0–1` or `0–100`), baseline score,
+10. higher-is-better primary metric and scale (`0–1` or `0–100`), baseline score,
    our score, computed percentage-point gain, and required L1 floor;
-10. project-appropriate repeat, uncertainty, or stability evidence, without a
+11. project-appropriate repeat, uncertainty, or stability evidence, without a
     universal seed count, aggregation method, or significance test;
-11. competitive, novelty, generalization, and additional paper-ready assessments;
-12. narrowest supported claim, remaining objection, and necessary versus
+12. competitive, novelty, generalization, and additional paper-ready assessments;
+13. narrowest supported claim, remaining objection, and necessary versus
     optional work.
 
 The controller copies L1 task/dataset and L2 problem/innovation/mechanism into
@@ -433,9 +447,9 @@ headline claim.
 
 ## Legacy-state audit
 
-Schema-v1 through schema-v9 states are readable. Unstructured L1/L2 approvals,
+Schema-v1 through schema-v10 states are readable. Unstructured L1/L2 approvals,
 unscoped decision questions, or schema-v4 L2 checkpoints without evidence
-references are marked for audit and do not satisfy schema-v10 gates. Schema-v5
+references are marked for audit and do not satisfy schema-v11 gates. Schema-v5
 scientific checkpoints retain their meaning while receiving an instruction-
 maintenance state during migration. Schema-v6 instruction snapshots migrate to
 the matching scope, and decision questions receive ordered target revisions so
@@ -447,6 +461,9 @@ reconfirmation. Schema-v9 paper assessments receive a legacy evaluation-anchor
 receipt and explicit missing-evidence markers during migration. That legacy
 anchor cannot pass the paper gate: return to `confirmed_project`, lock the
 metric again, and rebuild the assessment with actual stability evidence.
+Schema-v10 paper packets without the per-dataset baseline matrix return to
+`confirmed_project`; L1/L2 remain active, but the paper report and approval must
+be rebuilt under schema v11.
 Existing scoped approvals
 already linked from a checkpoint are migrated as consumed by that checkpoint;
 do not silently turn an unrelated old summary into new user approval. Run

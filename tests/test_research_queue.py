@@ -115,6 +115,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self,
         decision_id: str,
         minimum_gain: float | None = None,
+        paper_ready_threshold: str = "stable gain and matched external comparison",
         ok: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         args = [
@@ -141,7 +142,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--generalization-requirement",
             "second dataset required",
             "--paper-ready-threshold",
-            "stable gain and matched external comparison",
+            paper_ready_threshold,
         ]
         if minimum_gain is not None:
             args.extend(["--minimum-paper-gain-points", str(minimum_gain)])
@@ -217,6 +218,40 @@ class ResearchQueueCLITest(unittest.TestCase):
         state = json.loads(self.state.read_text(encoding="utf-8"))
         if set_anchor and state.get("evaluation_anchor") is None:
             self.set_evaluation_anchor(primary_metric, metric_scale)
+        baseline_search_scope = "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28"
+        baseline_source = "baseline citation and result table recorded in L2"
+        dataset_baseline_matrix = json.dumps(
+            [
+                {
+                    "dataset": "Dataset-A",
+                    "role": "primary",
+                    "baseline": "Baseline B, recent top-conference paper",
+                    "venue_year": "SIGIR 2025",
+                    "source": baseline_source,
+                    "search_scope": baseline_search_scope,
+                    "protocol_match": "same task and protocol",
+                    "metric": primary_metric,
+                    "metric_scale": metric_scale,
+                    "baseline_score": baseline_score,
+                    "our_score": our_score,
+                    "status": "MATCHED",
+                },
+                {
+                    "dataset": "Dataset-B",
+                    "role": "supporting",
+                    "baseline": "Baseline C, recent top-conference paper",
+                    "venue_year": "KDD 2024",
+                    "source": "supporting baseline citation recorded in L2",
+                    "search_scope": baseline_search_scope,
+                    "protocol_match": "same task and dataset-specific protocol",
+                    "metric": primary_metric,
+                    "metric_scale": metric_scale,
+                    "baseline_score": baseline_score,
+                    "our_score": our_score,
+                    "status": "MATCHED",
+                },
+            ]
+        )
         args = [
             "phase",
             self.state,
@@ -246,14 +281,18 @@ class ResearchQueueCLITest(unittest.TestCase):
             "residual removal with a source-identifiability penalty",
             "--final-results",
             f"{our_score} versus {baseline_score} on the primary matched evaluation",
+            "--primary-comparison-dataset",
+            "Dataset-A",
+            "--dataset-baseline-matrix",
+            dataset_baseline_matrix,
             "--recent-top-conference-baseline",
             "Baseline B, recent top-conference paper",
             "--baseline-venue-year",
             "SIGIR 2025",
             "--baseline-search-scope",
-            "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28",
+            baseline_search_scope,
             "--baseline-source",
-            "baseline citation and result table recorded in L2",
+            baseline_source,
             "--protocol-match-evidence",
             "same dataset, split, labels, metric, and evaluation procedure",
             "--evaluation-anchor-evidence",
@@ -317,6 +356,69 @@ class ResearchQueueCLITest(unittest.TestCase):
         )
         self.assertIn("require --phase exploration", result.stderr)
         self.assertFalse(ignored.exists())
+
+    def test_whitespace_cannot_create_scientific_authority_or_active_job(self) -> None:
+        blank = self.root / "blank.json"
+        result = self.run_cli(
+            "init",
+            blank,
+            "--project",
+            "demo",
+            "--phase",
+            "exploration",
+            "--venue-or-window",
+            " ",
+            "--domain",
+            " ",
+            "--pi-decision",
+            " ",
+            "--pi-outcome",
+            "select",
+            ok=False,
+        )
+        self.assertIn("Starting in exploration requires", result.stderr)
+        self.assertFalse(blank.exists())
+
+        self.init_exploration()
+        active = self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "candidate run",
+            "--command",
+            " ",
+            "--status",
+            "running",
+            "--next-poll",
+            "later",
+            "--next-action",
+            "inspect",
+            ok=False,
+        )
+        self.assertIn("must contain non-whitespace text", active.stderr)
+
+    def test_discussion_cannot_register_active_execution(self) -> None:
+        self.run_cli("init", self.state, "--project", "demo")
+        result = self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "premature run",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-poll",
+            "later",
+            "--next-action",
+            "inspect",
+            ok=False,
+        )
+        self.assertIn("discussion", result.stderr)
 
     def test_checkpoint_rejects_fields_from_another_layer(self) -> None:
         self.init_exploration()
@@ -567,6 +669,52 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--handoff-target",
             "paper-submission-orchestrator",
         )
+        self.run_cli("audit", self.state)
+
+    def test_paper_handoff_can_be_revoked_without_erasing_l1_l2(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-revoke.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        self.enter_paper_ready(assessment)
+        paper_q = self.add_answer("paper", "Approve this paper handoff?")
+        self.run_cli(
+            "confirm",
+            self.state,
+            "--layer",
+            "paper",
+            "--id",
+            "P001",
+            "--record",
+            assessment,
+            "--decision-id",
+            paper_q,
+            "--science-id",
+            "S001",
+            "--headline-claim",
+            "A narrow supported claim",
+            "--handoff-target",
+            "paper-submission-orchestrator",
+        )
+        revoked = json.loads(
+            self.run_cli(
+                "paper-revoke",
+                self.state,
+                "--pi-decision",
+                "撤销这次写作授权",
+                "--reason",
+                "需要重新评估论文定位",
+            ).stdout
+        )
+        self.assertEqual(revoked["phase"], "confirmed_project")
+        self.assertEqual(revoked["layer_checkpoints"]["direction"]["id"], "D001")
+        self.assertEqual(revoked["layer_checkpoints"]["science"]["id"], "S001")
+        self.assertEqual(revoked["layer_checkpoints"]["paper"]["status"], "UNSET")
+        self.assertIsNone(revoked["paper_ready_assessment_usable"])
+        self.assertIn("Paper handoff revoked by PI", assessment.read_text(encoding="utf-8"))
         self.run_cli("audit", self.state)
 
     def test_paper_gate_requires_pre_tuning_metric_anchor(self) -> None:
@@ -1100,7 +1248,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
         summary = json.loads(self.run_cli("status", self.state).stdout)
-        self.assertEqual(summary["schema_version"], 10)
+        self.assertEqual(summary["schema_version"], 11)
         self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
         self.assertEqual(
             summary["instruction_maintenance"]["recent_updates"], []
@@ -1874,6 +2022,8 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("baseline_venue_year", result.stderr)
         self.assertIn("baseline_search_scope", result.stderr)
         self.assertIn("baseline_score", result.stderr)
+        self.assertIn("primary_comparison_dataset", result.stderr)
+        self.assertIn("dataset_baseline_matrix", result.stderr)
         self.assertIn("evaluation_anchor_evidence", result.stderr)
         self.assertIn("stability_evidence", result.stderr)
 
@@ -1884,6 +2034,31 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("cannot lower the 1-point floor", result.stderr)
         state = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(state["layer_checkpoints"]["direction"]["status"], "UNSET")
+
+    def test_descriptive_paper_threshold_cannot_override_numeric_floor(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select"),
+            paper_ready_threshold="0.1 point would otherwise be enough",
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-text-threshold.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        blocked = self.enter_paper_ready(
+            assessment,
+            ok=False,
+            baseline_score=0.80,
+            our_score=0.805,
+        )
+        self.assertIn("below the configured 1-point floor", blocked.stderr)
+        standard = json.loads(self.state.read_text(encoding="utf-8"))[
+            "layer_checkpoints"
+        ]["direction"]["payload"]["evidence_standard"]
+        self.assertEqual(standard["minimum_paper_gain_points"], 1.0)
+        self.assertEqual(
+            standard["paper_ready_threshold"],
+            "0.1 point would otherwise be enough",
+        )
 
     def test_exact_one_point_gain_creates_complete_decision_report(self) -> None:
         self.init_exploration()
@@ -1914,6 +2089,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "Innovation: remove shortcut information without target labels",
             "Concrete method: residual removal with a source-identifiability penalty",
             "Final results: 0.81 versus 0.8 on the primary matched evaluation",
+            "Primary comparison dataset: Dataset-A",
+            "Per-dataset external-baseline comparisons:",
             "Strongest recent top-conference protocol-matched baseline:",
             "Baseline venue/year: SIGIR 2025",
             "Baseline search scope: SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28",
@@ -1972,7 +2149,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         self.assertEqual(
             migrated["layer_checkpoints"]["direction"]["status"],
             "LEGACY_CONFIRMED_NEEDS_AUDIT",
@@ -2000,25 +2177,28 @@ class ResearchQueueCLITest(unittest.TestCase):
             "evaluation_anchor_evidence",
             "stability_evidence",
             "favorable_seed_selection",
+            "primary_comparison_dataset",
+            "dataset_baseline_matrix",
         ):
             legacy_assessment.pop(field, None)
         legacy_assessment["payload_sha256_at_gate"] = "legacy-schema-v9"
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
-        self.run_cli("notify", self.state, "--text", "save schema-v10 migration")
+        self.run_cli("notify", self.state, "--text", "save schema-v11 migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         self.assertTrue(migrated["evaluation_anchor"]["legacy_derived"])
         self.assertEqual(migrated["evaluation_anchor"]["revision"], 1)
-        migrated_assessment = migrated["paper_ready_assessment"]
-        self.assertIn("Legacy pre-v10", migrated_assessment["stability_evidence"])
-        self.assertFalse(migrated_assessment["favorable_seed_selection"])
+        self.assertIsNone(migrated["paper_ready_assessment"])
+        self.assertEqual(migrated["phase"], "confirmed_project")
+        self.assertEqual(
+            migrated["layer_checkpoints"]["paper"]["status"], "UNSET"
+        )
         self.assertIsNone(migrated["seed_selection_risk_acceptance"])
         audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
         codes = {issue["code"] for issue in audit["control_issues"]}
         self.assertIn("EVALUATION_ANCHOR_LEGACY_RELOCK_REQUIRED", codes)
 
-        self.run_cli("phase", self.state, "--set", "confirmed_project")
         self.set_evaluation_anchor()
         relocked = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(relocked["evaluation_anchor"]["revision"], 2)
@@ -2114,6 +2294,48 @@ class ResearchQueueCLITest(unittest.TestCase):
             "ACTIVE_JOB_NEXT_ACTION_MISSING",
             {issue["code"] for issue in audit["control_issues"]},
         )
+
+    def test_manual_pause_blocks_execution_until_direct_resume(self) -> None:
+        self.init_exploration()
+        paused = json.loads(
+            self.run_cli(
+                "pause",
+                self.state,
+                "--pi-decision",
+                "先暂停所有实验",
+                "--reason",
+                "我需要检查方向",
+            ).stdout
+        )
+        self.assertEqual(paused["status"], "PAUSED_BY_PI")
+        blocked = self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "candidate run",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-poll",
+            "later",
+            "--next-action",
+            "inspect",
+            ok=False,
+        )
+        self.assertIn("manually paused", blocked.stderr)
+        resumed = json.loads(
+            self.run_cli(
+                "resume",
+                self.state,
+                "--pi-decision",
+                "继续实验",
+            ).stdout
+        )
+        self.assertEqual(resumed["status"], "ACTIVE")
+        self.assertIsNone(resumed["manual_pause"])
 
     def test_state_lock_rejects_overlapping_controller_command(self) -> None:
         self.init_exploration()
@@ -2226,6 +2448,53 @@ class ResearchQueueCLITest(unittest.TestCase):
             aged_question["wakeup_fingerprint"],
             changed_action["wakeup_fingerprint"],
         )
+
+    def test_monitor_ack_persists_processed_semantic_and_artifact_state(self) -> None:
+        self.init_exploration()
+        first = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        self.assertTrue(first["wakeup_changed_since_ack"])
+        acknowledged = json.loads(
+            self.run_cli(
+                "monitor-ack",
+                self.state,
+                "--wakeup-fingerprint",
+                first["wakeup_fingerprint"],
+                "--artifact-fingerprint",
+                "results-sha256:abc123",
+            ).stdout
+        )
+        self.assertFalse(acknowledged["wakeup_changed_since_ack"])
+        self.assertEqual(
+            acknowledged["last_acknowledged_artifact_fingerprint"],
+            "results-sha256:abc123",
+        )
+
+        self.run_cli("notify", self.state, "--text", "non-semantic status update")
+        unchanged = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        self.assertFalse(unchanged["wakeup_changed_since_ack"])
+
+        self.run_cli(
+            "question",
+            self.state,
+            "--layer",
+            "direction",
+            "--target",
+            "direction:D001",
+            "--text",
+            "Choose D001?",
+        )
+        changed = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        self.assertTrue(changed["wakeup_changed_since_ack"])
+        stale = self.run_cli(
+            "monitor-ack",
+            self.state,
+            "--wakeup-fingerprint",
+            first["wakeup_fingerprint"],
+            ok=False,
+        )
+        self.assertIn("stale monitor result", stale.stderr)
 
     def test_agents_audit_discovers_effective_chain_and_size_review(self) -> None:
         root_agents = self.root / "AGENTS.md"
@@ -2841,7 +3110,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("notify", self.state, "--text", "save migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
         questions = {q["id"]: q for q in migrated["macro_questions"]}
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         self.assertEqual(questions[first]["superseded_by"], second)
         self.assertEqual(
             migrated["decision_target_revisions"]["direction:D001"], 2
@@ -2860,7 +3129,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         self.assertEqual(
             migrated["instruction_maintenance"]["recent_scope_removals"], []
         )

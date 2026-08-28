@@ -3,8 +3,9 @@
 
 The controller enforces scoped typed approvals, ordered scientific checkpoints,
 active/deferred PI queues, the five-question pause, evidence-record links,
-lightweight active-job recovery, bounded project-instruction maintenance, and
-control-state audits. It records authority and artifact availability; it does
+manual pause/revocation, persistent monitor acknowledgements, lightweight
+active-job recovery, bounded project-instruction maintenance, and control-state
+audits. It records authority and artifact availability; it does
 not judge scientific adequacy, rewrite AGENTS.md, create authority, schedule
 itself, or kill processes.
 """
@@ -24,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 10
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+SCHEMA_VERSION = 11
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
 MIN_PAPER_READY_GAIN_POINTS = 1.0
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
@@ -100,6 +101,7 @@ PAPER_ASSESSMENT_TEXT_FIELDS = (
     "optional_work",
     "specific_method",
     "final_results",
+    "primary_comparison_dataset",
     "recent_top_conference_baseline",
     "baseline_venue_year",
     "baseline_search_scope",
@@ -112,6 +114,7 @@ PAPER_ASSESSMENT_TEXT_FIELDS = (
 PAPER_ASSESSMENT_NUMERIC_FIELDS = ("baseline_score", "our_score")
 PAPER_ASSESSMENT_CLI_FIELDS = (
     *PAPER_ASSESSMENT_TEXT_FIELDS,
+    "dataset_baseline_matrix",
     "metric_scale",
     *PAPER_ASSESSMENT_NUMERIC_FIELDS,
 )
@@ -249,6 +252,19 @@ def finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def nonblank(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def clean_text(value: Any, label: str, *, optional: bool = False) -> str | None:
+    if value is None and optional:
+        return None
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise SystemExit(f"{label} must contain non-whitespace text")
+    return cleaned
+
+
 def calculate_improvement_points(
     metric_scale: str, baseline_score: float, our_score: float
 ) -> float:
@@ -269,6 +285,116 @@ def calculate_improvement_points(
     else:
         raise SystemExit("--metric-scale must be unit_interval or percentage")
     return round(gain, 10)
+
+
+DATASET_BASELINE_FIELDS = (
+    "dataset",
+    "role",
+    "baseline",
+    "venue_year",
+    "source",
+    "search_scope",
+    "protocol_match",
+    "metric",
+    "metric_scale",
+    "baseline_score",
+    "our_score",
+    "status",
+)
+
+
+def parse_dataset_baseline_matrix(raw: Any) -> list[dict[str, Any]]:
+    if not nonblank(raw):
+        raise SystemExit(
+            "--dataset-baseline-matrix requires a JSON array with one external-baseline comparison per adopted dataset"
+        )
+    try:
+        matrix = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--dataset-baseline-matrix is not valid JSON: {exc}") from exc
+    if not isinstance(matrix, list) or not matrix:
+        raise SystemExit("--dataset-baseline-matrix must be a non-empty JSON array")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw_entry in enumerate(matrix, start=1):
+        if not isinstance(raw_entry, dict):
+            raise SystemExit(f"Dataset-baseline row {index} must be a JSON object")
+        missing = [
+            field
+            for field in DATASET_BASELINE_FIELDS
+            if field not in raw_entry
+            or (
+                field not in {"baseline_score", "our_score"}
+                and not nonblank(raw_entry.get(field))
+            )
+        ]
+        if missing:
+            raise SystemExit(
+                f"Dataset-baseline row {index} is missing fields: " + ", ".join(missing)
+            )
+        entry = {
+            field: (
+                raw_entry[field]
+                if field in {"baseline_score", "our_score"}
+                else str(raw_entry[field]).strip()
+            )
+            for field in DATASET_BASELINE_FIELDS
+        }
+        if entry["dataset"] in seen:
+            raise SystemExit(
+                f"Dataset-baseline matrix repeats dataset {entry['dataset']!r}"
+            )
+        seen.add(entry["dataset"])
+        if entry["role"] not in {"primary", "supporting"}:
+            raise SystemExit(
+                f"Dataset-baseline row {index} role must be primary or supporting"
+            )
+        if entry["status"] != "MATCHED":
+            raise SystemExit(
+                f"Dataset-baseline row {index} must be MATCHED before the paper gate"
+            )
+        if entry["metric_scale"] not in {"unit_interval", "percentage"}:
+            raise SystemExit(
+                f"Dataset-baseline row {index} metric_scale must be unit_interval or percentage"
+            )
+        calculate_improvement_points(
+            entry["metric_scale"], entry["baseline_score"], entry["our_score"]
+        )
+        normalized.append(entry)
+    if sum(entry["role"] == "primary" for entry in normalized) != 1:
+        raise SystemExit("Dataset-baseline matrix must contain exactly one primary row")
+    return normalized
+
+
+def dataset_baseline_matrix_complete(assessment: dict[str, Any]) -> bool:
+    matrix = assessment.get("dataset_baseline_matrix")
+    if not isinstance(matrix, list) or not matrix:
+        return False
+    try:
+        normalized = parse_dataset_baseline_matrix(
+            json.dumps(matrix, ensure_ascii=False)
+        )
+    except SystemExit:
+        return False
+    primary = [entry for entry in normalized if entry["role"] == "primary"]
+    if len(primary) != 1:
+        return False
+    row = primary[0]
+    return bool(
+        row["dataset"] == assessment.get("primary_comparison_dataset")
+        and row["baseline"] == assessment.get("recent_top_conference_baseline")
+        and row["venue_year"] == assessment.get("baseline_venue_year")
+        and row["source"] == assessment.get("baseline_source")
+        and row["search_scope"] == assessment.get("baseline_search_scope")
+        and row["metric"] == assessment.get("primary_metric")
+        and row["metric_scale"] == assessment.get("metric_scale")
+        and math.isclose(
+            row["baseline_score"], assessment.get("baseline_score"), abs_tol=1e-9
+        )
+        and math.isclose(
+            row["our_score"], assessment.get("our_score"), abs_tol=1e-9
+        )
+    )
 
 
 def evaluation_anchor_complete(anchor: Any) -> bool:
@@ -354,7 +480,8 @@ def paper_assessment_complete(assessment: Any) -> bool:
     except SystemExit:
         return False
     return (
-        assessment["minimum_paper_gain_points"] >= MIN_PAPER_READY_GAIN_POINTS
+        dataset_baseline_matrix_complete(assessment)
+        and assessment["minimum_paper_gain_points"] >= MIN_PAPER_READY_GAIN_POINTS
         and math.isclose(
             assessment["improvement_points"], calculated, abs_tol=1e-9
         )
@@ -434,6 +561,13 @@ def initial_state(project: str) -> dict[str, Any]:
         "phase": "discussion",
         "status": "ACTIVE",
         "paused_for_pi": False,
+        "manual_pause": None,
+        "last_manual_pause_event": None,
+        "monitoring": {
+            "last_acknowledged_wakeup_fingerprint": None,
+            "last_acknowledged_artifact_fingerprint": None,
+            "acknowledged_at": None,
+        },
         "frozen_by_pi": {},
         "frozen_history": [],
         "layer_checkpoints": {
@@ -637,6 +771,44 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
             )
         else:
             state.setdefault("evaluation_anchor", None)
+    if version in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
+        state.setdefault("manual_pause", None)
+        state.setdefault("last_manual_pause_event", None)
+        state.setdefault(
+            "monitoring",
+            {
+                "last_acknowledged_wakeup_fingerprint": None,
+                "last_acknowledged_artifact_fingerprint": None,
+                "acknowledged_at": None,
+            },
+        )
+        assessment = state.get("paper_ready_assessment")
+        if isinstance(assessment, dict) and not (
+            nonblank(assessment.get("primary_comparison_dataset"))
+            and isinstance(assessment.get("dataset_baseline_matrix"), list)
+            and bool(assessment.get("dataset_baseline_matrix"))
+        ):
+            # A pre-v11 paper packet did not prove per-dataset external-baseline
+            # coverage. Preserve the project direction and science, but make the
+            # paper packet ineligible until it is rebuilt.
+            state["paper_ready_assessment"] = None
+            state["seed_selection_risk_acceptance"] = None
+            if state.get("phase") in {"paper_ready_pending_pi", "paper_handoff_approved"}:
+                state["phase"] = "confirmed_project"
+            paper = state.setdefault("layer_checkpoints", {}).setdefault(
+                "paper", empty_checkpoint()
+            )
+            if paper.get("status") != "UNSET":
+                state.setdefault("checkpoint_history", []).append(
+                    {
+                        "layer": "paper",
+                        "previous": paper,
+                        "replacement_id": "schema-v11-dataset-baseline-reassessment",
+                        "decision_source": {"type": "schema_v11_migration"},
+                        "created_at": now_iso(),
+                    }
+                )
+                state["layer_checkpoints"]["paper"] = empty_checkpoint()
     state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -668,6 +840,7 @@ def load_state(path: Path) -> dict[str, Any]:
         "notifications": list,
         "instruction_maintenance": dict,
         "jobs": list,
+        "monitoring": dict,
     }
     for key, expected_type in required_types.items():
         if not isinstance(state.get(key), expected_type):
@@ -684,6 +857,10 @@ def load_state(path: Path) -> dict[str, Any]:
         raise SystemExit(
             "Invalid seed_selection_risk_acceptance: expected an object or null"
         )
+    if state.get("manual_pause") is not None and not isinstance(
+        state.get("manual_pause"), dict
+    ):
+        raise SystemExit("Invalid manual_pause: expected an object or null")
     for layer in CHECKPOINT_LAYERS:
         checkpoint = state["layer_checkpoints"].get(layer)
         if not isinstance(checkpoint, dict):
@@ -1052,6 +1229,16 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         f"- Core mechanism: {payload['core_mechanism']}\n"
         f"- Concrete method: {payload['specific_method']}\n"
         f"- Final results: {payload['final_results']}\n"
+        f"- Primary comparison dataset: {payload['primary_comparison_dataset']}\n"
+        "- Per-dataset external-baseline comparisons:\n\n"
+        "```json\n"
+        + json.dumps(
+            payload["dataset_baseline_matrix"],
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n```\n\n"
         "- Strongest recent top-conference protocol-matched baseline: "
         f"{payload['recent_top_conference_baseline']}\n"
         f"- Baseline venue/year: {payload['baseline_venue_year']}\n"
@@ -1331,6 +1518,9 @@ def ensure_l2_scaffold(state_path: Path, direction_id: str, payload: dict[str, A
             "<!-- RPW:SCIENCE_CURRENT:END -->\n\n"
             "## Problem-to-method chain\n\nUNSET\n\n"
             "## Nearest work and external baselines\n\nUNSET\n\n"
+            "## Dataset-indexed external-baseline matrix\n\n"
+            "| dataset | role | strongest recent top-conference baseline | venue/year | source/search scope | protocol match | metric/scale | baseline result | our matched result | status |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n\n"
             "## Decision-relevant results\n\nUNSET\n\n"
             "## Candidate and ceiling summary\n\nUNSET\n",
             encoding="utf-8",
@@ -1354,7 +1544,12 @@ def deferred_questions(state: dict[str, Any]) -> list[dict[str, Any]]:
 def refresh_pause(state: dict[str, Any]) -> None:
     count = len(active_questions(state))
     state["paused_for_pi"] = count >= MAX_MACRO_QUESTIONS
-    state["status"] = "PAUSED_FOR_PI" if state["paused_for_pi"] else "ACTIVE"
+    if state["paused_for_pi"]:
+        state["status"] = "PAUSED_FOR_PI"
+    elif isinstance(state.get("manual_pause"), dict):
+        state["status"] = "PAUSED_BY_PI"
+    else:
+        state["status"] = "ACTIVE"
 
 
 def require_execution_active(state: dict[str, Any], action: str) -> None:
@@ -1362,6 +1557,10 @@ def require_execution_active(state: dict[str, Any], action: str) -> None:
     if state["paused_for_pi"]:
         raise SystemExit(
             f"Cannot {action}: five PI decisions are pending and the workflow is PAUSED_FOR_PI"
+        )
+    if isinstance(state.get("manual_pause"), dict):
+        raise SystemExit(
+            f"Cannot {action}: the PI manually paused execution; use resume after a direct PI instruction"
         )
 
 
@@ -1455,7 +1654,7 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
     source = checkpoint.get("decision_source") or {}
     if (
         source.get("outcome") not in APPROVING_OUTCOMES
-        or not source.get("decision")
+        or not nonblank(source.get("decision"))
     ):
         return False
     payload = checkpoint.get("payload")
@@ -1479,7 +1678,11 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
         ),
         "paper": ("science_id", "headline_claim", "handoff_target"),
     }
-    if any(not payload.get(key) for key in required[layer]):
+    if any(
+        not nonblank(payload.get(key))
+        for key in required[layer]
+        if key != "evidence_standard"
+    ):
         return False
     if layer == "direction":
         standard = payload.get("evidence_standard")
@@ -1492,7 +1695,11 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
             "paper_ready_threshold",
             "minimum_paper_gain_points",
         )
-        if any(not standard.get(key) for key in keys):
+        if any(
+            not nonblank(standard.get(key))
+            for key in keys
+            if key != "minimum_paper_gain_points"
+        ):
             return False
         if not finite_number(standard.get("minimum_paper_gain_points")) or standard[
             "minimum_paper_gain_points"
@@ -1657,6 +1864,8 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
     def add(code: str, severity: str, message: str) -> None:
         issues.append({"code": code, "severity": severity, "message": message})
 
+    if not nonblank(state.get("project")):
+        add("INVALID_PROJECT_NAME", "P1", "Project name must contain non-whitespace text")
     if state.get("phase") not in VALID_PHASES:
         add("INVALID_PHASE", "P0", f"Unknown phase: {state.get('phase')!r}")
         return issues
@@ -1741,7 +1950,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v10",
+                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v11",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -1766,7 +1975,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
                 "P0",
-                f"Confirmed {layer} checkpoint lacks required schema-v10 control fields",
+                f"Confirmed {layer} checkpoint lacks required schema-v11 control fields",
             )
         if (
             layer == "paper"
@@ -2169,19 +2378,28 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         add("L1_FILE_MISSING", "P0", f"Missing durable L1 file: {l1_path}")
     seen_jobs: set[str] = set()
     for job in state.get("jobs", []):
-        job_id = str(job.get("id", ""))
+        job_id = str(job.get("id", "")).strip()
         if not job_id or job_id in seen_jobs:
             add("INVALID_JOB_ID", "P1", "Job IDs must be non-empty and unique")
         seen_jobs.add(job_id)
         if job.get("status") not in JOB_STATUSES:
             add("INVALID_JOB_STATUS", "P1", f"Invalid job status for {job_id}")
         if job.get("status") in ACTIVE_JOB_STATUSES and not (
-            job.get("command") or job.get("session")
+            nonblank(job.get("command")) or nonblank(job.get("session"))
         ):
             add(
                 "ACTIVE_JOB_NOT_RESUMABLE",
                 "P1",
                 f"Active job {job_id} has neither a command nor a session identifier",
+            )
+        if (
+            state.get("phase") == "discussion"
+            and job.get("status") in ACTIVE_JOB_STATUSES
+        ):
+            add(
+                "ACTIVE_JOB_IN_DISCUSSION",
+                "P1",
+                f"Active job {job_id} is registered before the research compass is confirmed",
             )
         if job.get("status") in ACTIVE_JOB_STATUSES and not str(
             job.get("next_poll") or ""
@@ -2198,6 +2416,30 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "ACTIVE_JOB_NEXT_ACTION_MISSING",
                 "P1",
                 f"Active job {job_id} has no resumable next action",
+            )
+    manual_pause = state.get("manual_pause")
+    if isinstance(manual_pause, dict) and not nonblank(manual_pause.get("decision")):
+        add(
+            "MANUAL_PAUSE_DECISION_INVALID",
+            "P0",
+            "Manual pause lacks the PI's direct instruction",
+        )
+    monitoring = state.get("monitoring")
+    if not isinstance(monitoring, dict):
+        add(
+            "MONITORING_STATE_INVALID",
+            "P1",
+            "Monitoring acknowledgement state is invalid",
+        )
+    else:
+        acknowledged = monitoring.get("last_acknowledged_wakeup_fingerprint")
+        if acknowledged is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", str(acknowledged)
+        ):
+            add(
+                "MONITOR_ACK_FINGERPRINT_INVALID",
+                "P1",
+                "Stored monitor acknowledgement fingerprint is invalid",
             )
     return issues
 
@@ -2315,6 +2557,9 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "phase": state["phase"],
         "status": state["status"],
         "paused_for_pi": state["paused_for_pi"],
+        "manual_pause": state.get("manual_pause"),
+        "last_manual_pause_event": state.get("last_manual_pause_event"),
+        "monitoring": state.get("monitoring"),
         "pending_macro_count": len(pending),
         "pending_macro_questions": pending,
         "deferred_pi_count": len(deferred),
@@ -2434,14 +2679,24 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
         ),
         "control_issue_codes": issue_codes,
     }
+    wakeup_fingerprint = canonical_payload_sha256(wakeup_signal)
+    monitoring = state.get("monitoring") or {}
+    last_acknowledged = monitoring.get("last_acknowledged_wakeup_fingerprint")
     return {
         "schema_version": state["schema_version"],
         "project": state["project"],
         "phase": state["phase"],
         "status": state["status"],
         "paused_for_pi": state["paused_for_pi"],
+        "manually_paused": isinstance(state.get("manual_pause"), dict),
         "state_sha256": sha256_file(state_path),
-        "wakeup_fingerprint": canonical_payload_sha256(wakeup_signal),
+        "wakeup_fingerprint": wakeup_fingerprint,
+        "wakeup_changed_since_ack": wakeup_fingerprint != last_acknowledged,
+        "last_acknowledged_wakeup_fingerprint": last_acknowledged,
+        "last_acknowledged_artifact_fingerprint": monitoring.get(
+            "last_acknowledged_artifact_fingerprint"
+        ),
+        "monitor_acknowledged_at": monitoring.get("acknowledged_at"),
         "updated_at": state["updated_at"],
         "pending_macro_count": len(pending),
         "pending_macro_ids": [question.get("id") for question in pending],
@@ -2478,32 +2733,41 @@ def cmd_init(args: argparse.Namespace) -> None:
             "otherwise omit them and confirm the compass later"
         )
     if args.phase == "exploration" and not (
-        args.venue_or_window
-        and args.domain
-        and args.pi_decision
+        nonblank(args.venue_or_window)
+        and nonblank(args.domain)
+        and nonblank(args.pi_decision)
         and args.pi_outcome in APPROVING_OUTCOMES
     ):
         raise SystemExit(
             "Starting in exploration requires --venue-or-window, --domain, "
             "--pi-decision, and --pi-outcome approve|select"
         )
-    state = initial_state(args.project)
-    ensure_scaffold(path, args.project)
+    project = clean_text(args.project, "--project")
+    state = initial_state(project)
+    ensure_scaffold(path, project)
     initial_audit = analyze_project_instructions(path)
     state["instruction_maintenance"]["audits_by_scope"][
         instruction_scope_key(initial_audit)
     ] = initial_audit
     if args.phase == "exploration":
+        venue_or_window = clean_text(args.venue_or_window, "--venue-or-window")
+        domain = clean_text(args.domain, "--domain")
+        starting_concept = (
+            clean_text(args.starting_concept, "--starting-concept")
+            if args.starting_concept is not None
+            else "UNSET"
+        )
+        pi_decision = clean_text(args.pi_decision, "--pi-decision")
         l1 = research_root_for_state(path) / "L1-directions.md"
         record, stored, _ = normalize_project_record(path, str(l1))
         payload = {
-            "venue_or_window": args.venue_or_window,
-            "domain": args.domain,
-            "starting_concept": args.starting_concept or "UNSET",
+            "venue_or_window": venue_or_window,
+            "domain": domain,
+            "starting_concept": starting_concept,
         }
         source = {
             "type": "direct_pi_instruction",
-            "decision": args.pi_decision,
+            "decision": pi_decision,
             "outcome": args.pi_outcome,
         }
         update_record_placeholders(record, "compass", "C001", payload, source)
@@ -2512,7 +2776,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         state["layer_checkpoints"]["compass"] = {
             "status": "CONFIRMED_BY_PI",
             "id": "C001",
-            "summary": f"venue_or_window={args.venue_or_window}; domain={args.domain}",
+            "summary": f"venue_or_window={venue_or_window}; domain={domain}",
             "payload": payload,
             "confirmed_at": now_iso(),
             "decision_source": source,
@@ -2531,6 +2795,34 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
+def cmd_monitor_ack(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    current = compact_state_summary(path, state)["wakeup_fingerprint"]
+    expected = str(args.wakeup_fingerprint or "").strip()
+    if not expected:
+        raise SystemExit("--wakeup-fingerprint must be non-empty")
+    if expected != current:
+        raise SystemExit(
+            "Refusing to acknowledge a stale monitor result: read status --compact again"
+        )
+    artifact = (
+        clean_text(
+            args.artifact_fingerprint,
+            "--artifact-fingerprint",
+        )
+        if args.artifact_fingerprint is not None
+        else None
+    )
+    state["monitoring"] = {
+        "last_acknowledged_wakeup_fingerprint": current,
+        "last_acknowledged_artifact_fingerprint": artifact,
+        "acknowledged_at": now_iso(),
+    }
+    save_state(path, state)
+    print(json.dumps(compact_state_summary(path, state), ensure_ascii=False, indent=2))
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
@@ -2538,6 +2830,86 @@ def cmd_audit(args: argparse.Namespace) -> None:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if summary["control_issues"]:
         raise SystemExit(2)
+
+
+def cmd_pause(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    if isinstance(state.get("manual_pause"), dict):
+        raise SystemExit("Execution is already manually paused by the PI")
+    decision = clean_text(args.pi_decision, "--pi-decision")
+    event = {
+        "action": "pause",
+        "decision": decision,
+        "reason": clean_text(args.reason, "--reason", optional=True),
+        "created_at": now_iso(),
+    }
+    state["manual_pause"] = event
+    state["last_manual_pause_event"] = event
+    refresh_pause(state)
+    save_state(path, state)
+    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    if not isinstance(state.get("manual_pause"), dict):
+        raise SystemExit("Execution is not manually paused")
+    decision = clean_text(args.pi_decision, "--pi-decision")
+    event = {
+        "action": "resume",
+        "decision": decision,
+        "reason": clean_text(args.reason, "--reason", optional=True),
+        "previous_pause": state["manual_pause"],
+        "created_at": now_iso(),
+    }
+    state["manual_pause"] = None
+    state["last_manual_pause_event"] = event
+    refresh_pause(state)
+    save_state(path, state)
+    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
+
+
+def cmd_paper_revoke(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    if state.get("phase") != "paper_handoff_approved":
+        raise SystemExit("Paper handoff can be revoked only after paper approval")
+    decision = clean_text(args.pi_decision, "--pi-decision")
+    reason = clean_text(args.reason, "--reason")
+    previous = state["layer_checkpoints"]["paper"]
+    revoked_at = now_iso()
+    state["checkpoint_history"].append(
+        {
+            "layer": "paper",
+            "previous": previous,
+            "replacement_id": "revoked-by-pi",
+            "decision_source": {
+                "type": "direct_pi_revocation",
+                "decision": decision,
+                "reason": reason,
+            },
+            "created_at": revoked_at,
+        }
+    )
+    record = resolve_stored_path(path, previous.get("record_path"))
+    if record is not None and record.is_file():
+        with record.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(
+                "\n\n## Paper handoff revoked by PI\n\n"
+                f"- Revoked at: {revoked_at}\n"
+                f"- User decision: {decision}\n"
+                f"- Reason: {reason}\n"
+                "- L1/L2 remain active; a new paper report and decision are required.\n"
+            )
+    state["layer_checkpoints"]["paper"] = empty_checkpoint()
+    state["paper_ready_assessment"] = None
+    state["seed_selection_risk_acceptance"] = None
+    state["phase"] = "confirmed_project"
+    refresh_pause(state)
+    save_state(path, state)
+    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
 
 
 def cmd_question(args: argparse.Namespace) -> None:
@@ -3380,19 +3752,22 @@ def checkpoint_payload(
     args: argparse.Namespace, state_path: Path, state: dict[str, Any]
 ) -> dict[str, Any]:
     if args.layer == "compass":
-        if not (args.venue_or_window and args.domain):
+        if not (nonblank(args.venue_or_window) and nonblank(args.domain)):
             raise SystemExit("Compass confirmation requires --venue-or-window and --domain")
         previous = state["layer_checkpoints"].get("compass", {})
         previous_payload = previous.get("payload") or {}
         if args.clear_starting_concept:
             starting_concept = "UNSET"
         elif args.starting_concept is not None:
-            starting_concept = args.starting_concept or "UNSET"
+            starting_concept = clean_text(args.starting_concept, "--starting-concept")
         else:
-            starting_concept = previous_payload.get("starting_concept") or "UNSET"
+            starting_concept = (
+                str(previous_payload.get("starting_concept") or "UNSET").strip()
+                or "UNSET"
+            )
         return {
-            "venue_or_window": args.venue_or_window,
-            "domain": args.domain,
+            "venue_or_window": clean_text(args.venue_or_window, "--venue-or-window"),
+            "domain": clean_text(args.domain, "--domain"),
             "starting_concept": starting_concept,
         }
     if args.layer == "direction":
@@ -3421,20 +3796,20 @@ def checkpoint_payload(
             "generalization_requirement": args.generalization_requirement,
             "paper_ready_threshold": args.paper_ready_threshold,
         }
-        missing = [key for key, value in required.items() if not value]
+        missing = [key for key, value in required.items() if not nonblank(value)]
         if missing:
             raise SystemExit(
                 "Direction confirmation is missing structured fields: " + ", ".join(missing)
             )
         return {
-            "task_type": args.task_type,
-            "dataset": args.dataset,
-            "unexposed_dataset_search": args.unexposed_dataset_search,
+            "task_type": str(args.task_type).strip(),
+            "dataset": str(args.dataset).strip(),
+            "unexposed_dataset_search": str(args.unexposed_dataset_search).strip(),
             "evidence_standard": {
-                "competitive_bar": args.competitive_bar,
-                "novelty_sufficiency": args.novelty_sufficiency,
-                "generalization_requirement": args.generalization_requirement,
-                "paper_ready_threshold": args.paper_ready_threshold,
+                "competitive_bar": str(args.competitive_bar).strip(),
+                "novelty_sufficiency": str(args.novelty_sufficiency).strip(),
+                "generalization_requirement": str(args.generalization_requirement).strip(),
+                "paper_ready_threshold": str(args.paper_ready_threshold).strip(),
                 "minimum_paper_gain_points": float(minimum_gain),
             },
         }
@@ -3447,7 +3822,7 @@ def checkpoint_payload(
             "external_baseline_status": args.external_baseline_status,
             "ceiling_summary": args.ceiling_summary,
         }
-        missing = [key for key, value in required.items() if not value]
+        missing = [key for key, value in required.items() if not nonblank(value)]
         if missing:
             raise SystemExit(
                 "Science confirmation is missing structured fields: " + ", ".join(missing)
@@ -3455,7 +3830,8 @@ def checkpoint_payload(
         direction = state["layer_checkpoints"]["direction"]
         if not checkpoint_usable(state_path, state, "direction"):
             raise SystemExit("Cannot confirm science before a complete L1 direction")
-        if args.direction_id != direction.get("id"):
+        required = {key: str(value).strip() for key, value in required.items()}
+        if required["direction_id"] != direction.get("id"):
             raise SystemExit("--direction-id must match the active confirmed direction")
         required["evidence_refs"] = {
             "nearest_work": evidence_reference(
@@ -3475,7 +3851,7 @@ def checkpoint_payload(
             "headline_claim": args.headline_claim,
             "handoff_target": args.handoff_target,
         }
-        missing = [key for key, value in required.items() if not value]
+        missing = [key for key, value in required.items() if not nonblank(value)]
         if missing:
             raise SystemExit(
                 "Paper confirmation is missing structured fields: " + ", ".join(missing)
@@ -3483,7 +3859,8 @@ def checkpoint_payload(
         science = state["layer_checkpoints"]["science"]
         if not checkpoint_usable(state_path, state, "science"):
             raise SystemExit("Cannot confirm paper handoff before a complete L2 story")
-        if args.science_id != science.get("id"):
+        required = {key: str(value).strip() for key, value in required.items()}
+        if required["science_id"] != science.get("id"):
             raise SystemExit("--science-id must match the active confirmed science checkpoint")
         if state.get("phase") != "paper_ready_pending_pi":
             raise SystemExit("Paper handoff requires phase paper_ready_pending_pi")
@@ -3798,6 +4175,8 @@ def cmd_phase(args: argparse.Namespace) -> None:
             for field in ("metric_scale", *PAPER_ASSESSMENT_NUMERIC_FIELDS)
             if getattr(args, field) is None
         )
+        if args.dataset_baseline_matrix is None:
+            missing.append("dataset_baseline_matrix")
         if missing:
             raise SystemExit(
                 "Paper-ready assessment is missing structured fields: "
@@ -3806,8 +4185,15 @@ def cmd_phase(args: argparse.Namespace) -> None:
         direction_payload = state["layer_checkpoints"]["direction"]["payload"]
         science_payload = state["layer_checkpoints"]["science"]["payload"]
         anchor = state["evaluation_anchor"]
+        assessment_text = {
+            field: str(getattr(args, field)).strip()
+            for field in PAPER_ASSESSMENT_TEXT_FIELDS
+        }
+        dataset_baseline_matrix = parse_dataset_baseline_matrix(
+            args.dataset_baseline_matrix
+        )
         if (
-            args.primary_metric != anchor["primary_metric"]
+            assessment_text["primary_metric"] != anchor["primary_metric"]
             or args.metric_scale != anchor["metric_scale"]
         ):
             raise SystemExit(
@@ -3862,8 +4248,18 @@ def cmd_phase(args: argparse.Namespace) -> None:
             "evaluation_anchor_revision": anchor["revision"],
             "metric_direction": anchor["metric_direction"],
             "favorable_seed_selection": bool(args.favorable_seed_selection),
-            **{field: getattr(args, field) for field in PAPER_ASSESSMENT_CLI_FIELDS},
+            **assessment_text,
+            "dataset_baseline_matrix": dataset_baseline_matrix,
+            "metric_scale": args.metric_scale,
+            "baseline_score": args.baseline_score,
+            "our_score": args.our_score,
         }
+        if not dataset_baseline_matrix_complete(assessment_payload):
+            raise SystemExit(
+                "The primary dataset-baseline row must exactly match "
+                "--primary-comparison-dataset, baseline identity/venue/source/search "
+                "scope, primary metric/scale, and the headline baseline/our scores"
+            )
         if not paper_assessment_complete(assessment_payload):
             raise SystemExit("Internal paper-ready assessment validation failed")
         append_paper_assessment_receipt(record, assessment_payload)
@@ -4023,20 +4419,28 @@ def cmd_job_add(args: argparse.Namespace) -> None:
         raise SystemExit("A job requires non-empty --description")
     if any(job.get("id") == job_id for job in state["jobs"]):
         raise SystemExit(f"Job already exists: {job_id}")
-    if args.status in ACTIVE_JOB_STATUSES and not (args.command or args.session):
+    if args.status in ACTIVE_JOB_STATUSES and state.get("phase") == "discussion":
+        raise SystemExit(
+            "Cannot register active execution in discussion; confirm the research compass first"
+        )
+    command = clean_text(args.command, "--command", optional=True)
+    session = clean_text(args.session, "--session", optional=True)
+    next_poll = clean_text(args.next_poll, "--next-poll", optional=True)
+    next_action = clean_text(args.next_action, "--next-action", optional=True)
+    if args.status in ACTIVE_JOB_STATUSES and not (command or session):
         raise SystemExit("An active job requires --command or --session")
-    if args.status in ACTIVE_JOB_STATUSES and not str(args.next_poll or "").strip():
+    if args.status in ACTIVE_JOB_STATUSES and not next_poll:
         raise SystemExit("An active job requires --next-poll at a meaningful check time")
-    if args.status in ACTIVE_JOB_STATUSES and not str(args.next_action or "").strip():
+    if args.status in ACTIVE_JOB_STATUSES and not next_action:
         raise SystemExit("An active job requires a non-empty --next-action")
     job = {
         "id": job_id,
         "description": description,
-        "command": args.command,
-        "session": args.session,
+        "command": command,
+        "session": session,
         "status": args.status,
-        "next_poll": args.next_poll,
-        "next_action": args.next_action,
+        "next_poll": next_poll,
+        "next_action": next_action,
         "result": None,
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -4049,21 +4453,29 @@ def cmd_job_add(args: argparse.Namespace) -> None:
 def cmd_job_update(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
-    matches = [job for job in state["jobs"] if job.get("id") == args.id]
+    job_id = clean_text(args.id, "--id")
+    matches = [job for job in state["jobs"] if job.get("id") == job_id]
     if not matches:
-        raise SystemExit(f"Job not found: {args.id}")
+        raise SystemExit(f"Job not found: {job_id}")
     job = matches[0]
     new_status = args.status or job.get("status")
-    if state["paused_for_pi"] and new_status in ACTIVE_JOB_STATUSES:
+    refresh_pause(state)
+    if state["status"] != "ACTIVE" and new_status in ACTIVE_JOB_STATUSES:
         raise SystemExit(
-            "Cannot continue, poll, or advance an active job while PAUSED_FOR_PI; "
+            f"Cannot continue, poll, or advance an active job while {state['status']}; "
             "only record a safe terminal status"
         )
     for field in ("status", "session", "next_poll", "next_action", "result"):
         value = getattr(args, field)
         if value is not None:
-            job[field] = value
-    if job.get("status") in ACTIVE_JOB_STATUSES and not (job.get("command") or job.get("session")):
+            job[field] = (
+                str(value).strip()
+                if field in {"session", "next_poll", "next_action", "result"}
+                else value
+            )
+    if job.get("status") in ACTIVE_JOB_STATUSES and not (
+        nonblank(job.get("command")) or nonblank(job.get("session"))
+    ):
         raise SystemExit("An active job requires a command or session identifier")
     if job.get("status") in ACTIVE_JOB_STATUSES and not str(
         job.get("next_poll") or ""
@@ -4081,18 +4493,20 @@ def cmd_job_update(args: argparse.Namespace) -> None:
 def cmd_job_remove(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
-    matches = [job for job in state["jobs"] if job.get("id") == args.id]
+    job_id = clean_text(args.id, "--id")
+    matches = [job for job in state["jobs"] if job.get("id") == job_id]
     if not matches:
-        raise SystemExit(f"Job not found: {args.id}")
+        raise SystemExit(f"Job not found: {job_id}")
     job = matches[0]
-    if state["paused_for_pi"] and job.get("status") in ACTIVE_JOB_STATUSES:
+    refresh_pause(state)
+    if state["status"] != "ACTIVE" and job.get("status") in ACTIVE_JOB_STATUSES:
         raise SystemExit(
-            "Cannot remove tracking for an active job while PAUSED_FOR_PI; "
+            f"Cannot remove tracking for an active job while {state['status']}; "
             "record its safe terminal status first"
         )
     if job.get("status") in ACTIVE_JOB_STATUSES and not args.force:
         raise SystemExit("Refusing to remove an active job without --force")
-    state["jobs"] = [item for item in state["jobs"] if item.get("id") != args.id]
+    state["jobs"] = [item for item in state["jobs"] if item.get("id") != job_id]
     save_state(path, state)
     print(json.dumps({"removed": job, "state": state_summary(path, state)}, ensure_ascii=False, indent=2))
 
@@ -4137,9 +4551,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.set_defaults(func=cmd_status)
 
+    monitor_ack_parser = subparsers.add_parser(
+        "monitor-ack",
+        help="Persist the semantic state and optional artifact fingerprint already processed",
+    )
+    monitor_ack_parser.add_argument("state")
+    monitor_ack_parser.add_argument("--wakeup-fingerprint", required=True)
+    monitor_ack_parser.add_argument(
+        "--artifact-fingerprint",
+        help="Project-specific job/result fingerprint processed in this wakeup",
+    )
+    monitor_ack_parser.set_defaults(func=cmd_monitor_ack)
+
     audit_parser = subparsers.add_parser("audit", help="Fail when workflow control issues exist")
     audit_parser.add_argument("state")
     audit_parser.set_defaults(func=cmd_audit)
+
+    pause_parser = subparsers.add_parser(
+        "pause", help="Record a direct PI instruction to pause all workflow execution"
+    )
+    pause_parser.add_argument("state")
+    pause_parser.add_argument("--pi-decision", required=True)
+    pause_parser.add_argument("--reason")
+    pause_parser.set_defaults(func=cmd_pause)
+
+    resume_parser = subparsers.add_parser(
+        "resume", help="Record a direct PI instruction to resume a manual pause"
+    )
+    resume_parser.add_argument("state")
+    resume_parser.add_argument("--pi-decision", required=True)
+    resume_parser.add_argument("--reason")
+    resume_parser.set_defaults(func=cmd_resume)
+
+    paper_revoke_parser = subparsers.add_parser(
+        "paper-revoke",
+        help="Revoke an approved paper handoff while retaining the active L1/L2 story",
+    )
+    paper_revoke_parser.add_argument("state")
+    paper_revoke_parser.add_argument("--pi-decision", required=True)
+    paper_revoke_parser.add_argument("--reason", required=True)
+    paper_revoke_parser.set_defaults(func=cmd_paper_revoke)
 
     question_parser = subparsers.add_parser("question", help="Add a PI decision question")
     question_parser.add_argument("state")
@@ -4269,6 +4720,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--final-results", help="Plain-language final decision-relevant result summary"
     )
     phase_parser.add_argument(
+        "--primary-comparison-dataset",
+        help="Dataset whose matched row supplies the headline numeric paper gate",
+    )
+    phase_parser.add_argument(
+        "--dataset-baseline-matrix",
+        help=(
+            "JSON array with one MATCHED recent top-conference external-baseline row "
+            "for every adopted dataset"
+        ),
+    )
+    phase_parser.add_argument(
         "--recent-top-conference-baseline",
         help="Identity of the strongest recent top-conference matched baseline found",
     )
@@ -4383,7 +4845,10 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_parser.add_argument("--problem")
     confirm_parser.add_argument("--core-mechanism")
     confirm_parser.add_argument("--innovation-claim")
-    confirm_parser.add_argument("--external-baseline-status")
+    confirm_parser.add_argument(
+        "--external-baseline-status",
+        help="Per-dataset external-baseline coverage, protocol match, and blockers",
+    )
     confirm_parser.add_argument("--ceiling-summary")
     confirm_parser.add_argument("--nearest-work-record")
     confirm_parser.add_argument("--baseline-record")

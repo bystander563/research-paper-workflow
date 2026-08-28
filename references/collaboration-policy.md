@@ -198,15 +198,18 @@ fixed 20-minute research loop:
 1. choose the next meaningful wake time from expected job progress or a known
    decision boundary; the 20-minute mark is relevant only to an unanswered
    question's batching/revisit condition;
-2. run `status STATE --compact`, compare its `wakeup_fingerprint`, then inspect
-   the job and an artifact or process fingerprint before loading the full
+2. run `status STATE --compact`; when `wakeup_changed_since_ack` is false,
+   compare the current artifact/process fingerprint with
+   `last_acknowledged_artifact_fingerprint` before loading the full
    state, literature, or analysis; a next-check reschedule alone is not a
    meaningful change, while an unanswered question crossing the 20-minute
    batching boundary changes the fingerprint once;
 3. if nothing changed, update the next useful check and exit without repeating
    reasoning or producing a report;
 4. if evidence changed, analyze it and launch at most one next authorized
-   experiment batch before scheduling another wakeup;
+   experiment batch; after the state write succeeds, persist the processed
+   semantic and artifact fingerprints by reading compact status again and using
+   its new fingerprint with `monitor-ack` before scheduling another wakeup;
 5. stop future wakeups before costly work when five PI questions are active, a
    required user decision blocks the branch, the paper gate is reached, the
    user pauses/stops, or no authorized promising action remains.
@@ -217,6 +220,11 @@ job registry and next action current so a later task can resume safely.
 Desktop-local monitoring requires the machine and app to remain available.
 Use the narrowest permission mode that can run the known project command, read
 its result fingerprint, and update the scoped workflow state.
+
+A direct user pause is separate from the five-question cap. Record it with
+`pause`, report `PAUSED_BY_PI`, and stop active work and future wakeups until a
+direct `resume`. Do not infer a resume from silence or from answering an
+unrelated queued question.
 
 ## Execution defaults
 

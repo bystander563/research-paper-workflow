@@ -122,6 +122,13 @@ Before calling a method promising or giving it a broad tuning budget, identify a
 - a strong simple baseline;
 - internal variants and ablations in a separate category.
 
+Index the competitive comparison by adopted dataset. For each primary or
+generalization dataset, maintain the strongest recent top-conference
+protocol-match found for that dataset, its venue/year/source/search scope, and
+our result under the same protocol. A method may be the strongest comparator on
+several datasets, but each dataset keeps its own evidence row; never reuse one
+dataset's number as evidence for another.
+
 Verify task, prediction unit, dataset version, split, supervision, information available at inference, metric definition, and evaluation date. A larger published number under a different protocol is historical context, not an apples-to-apples winner. Label it `REPORTED_NOT_MATCHED`; reproduce or adapt decision-critical baselines under the current protocol when feasible.
 
 For the eventual paper decision, identify the strongest recent top-conference

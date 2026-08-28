@@ -114,9 +114,8 @@ Gate `G1 L1_CONFIRMED`:
 - the structured checkpoint contains task, dataset, competitive bar, novelty
   sufficiency, generalization requirement, additional paper-ready requirements,
   and the unexposed-dataset search result;
-- the numeric paper-gain floor is at least 1 percentage point over the strongest
-  recent top-conference protocol-matched baseline; a project may raise but not
-  lower it;
+- the numeric paper-gain floor is recorded separately for G3; a project may
+  raise but not lower the controller minimum;
 - descriptive paper-ready requirements may add conditions but cannot redefine
   or lower the numeric floor;
 - no unresolved contradiction exists with another user-frozen field.
@@ -130,7 +129,7 @@ Within the confirmed L1 direction:
 
 1. map the nearest conceptual work from primary sources;
 2. identify the concrete failure or limitation to improve;
-3. build the external-baseline roster;
+3. build the external-baseline roster, indexed by adopted dataset;
 4. derive a problem -> intuition -> predicted change -> mathematics -> minimal
    implementation chain;
 5. run a cheap falsifiable screen;
@@ -138,6 +137,9 @@ Within the confirmed L1 direction:
 7. compare the resulting ceiling summary with real external methods.
 
 The baseline roster must be identified and source-checked before broad tuning.
+Every adopted dataset has its own strongest recent top-conference comparator,
+venue/year/source/search scope, protocol-match status, and our matched result.
+Do not reuse a comparator or score from a different dataset.
 The full matched local reproduction need not be complete at that moment. A
 `BLOCKED` or `BASELINE_INCOMPLETE` key comparison may coexist with L2 method
 work, but it cannot support a paper-worthy judgment or pass G3.
@@ -205,6 +207,9 @@ Gate `G3 PAPER_DECISION_READY`:
 - a primary source identifies the strongest recent top-conference baseline found
   for the same protocol, and the report explains the task, dataset/split, labels,
   supervision/inference information, metric, and evaluation match;
+- every adopted dataset has a `MATCHED` dataset-baseline row containing its own
+  external comparator and our result; exactly one row is marked as the primary
+  numeric comparison;
 - on a higher-is-better primary metric, our result exceeds that baseline by at
   least the L1 floor, which can never be below 1 percentage point (`0.01` on a
   `0–1` scale or `1.0` on a `0–100` scale);
@@ -225,7 +230,8 @@ assessment.
 
 Before asking the user, generate a readable project-local paper-decision report
 covering the current task, dataset, problem in current/nearest work, innovation, concrete
-method, final results, baseline identity/venue/year/source and search scope,
+method, final results, the per-dataset external-baseline matrix and primary
+comparison dataset, baseline identity/venue/year/source and search scope,
 protocol-match evidence, the metric anchor and current-revision evidence,
 metric scale, baseline score, our score, computed point gain, required floor,
 stability evidence, and the remaining G3 assessments. Only after that report
@@ -260,6 +266,10 @@ or obtain the needed L1/L2 change. Approval to enter writing does not approve an
 arbitrary later story packet or submission action; downstream approval gates
 remain separate.
 
+The user may later withdraw this writing authorization. `paper-revoke` archives
+the approval receipt, returns the phase to `confirmed_project`, preserves L1/L2,
+and requires a rebuilt report plus a new paper decision before writing resumes.
+
 ## Pause overlay: PAUSED_FOR_PI
 
 Only active unanswered PI decisions count toward the cap. Notifications and
@@ -283,6 +293,12 @@ active-to-active polling or advancement while paused. It also rejects new
 project-instruction audit scopes and instruction-maintenance mutations.
 Answering questions, recording notifications, read-only status/audit checks, and
 marking an already-running job with a safe terminal status remain allowed.
+
+The user can also issue a direct manual pause independently of the question cap.
+The controller then reports `PAUSED_BY_PI` and blocks active execution until a
+direct `resume` instruction. If both conditions exist, the five-question
+`PAUSED_FOR_PI` state remains visible and resolving the manual pause alone does
+not bypass it.
 
 ## Active-job recovery
 
@@ -313,16 +329,20 @@ state-aware wakeup, not a fixed 20-minute research loop:
 1. set the next check from the job's expected completion or another meaningful
    state boundary; use the 20-minute mark only when an unanswered question
    leaves other authorized work to resume;
-2. run `status STATE --compact` and compare its semantic
-   `wakeup_fingerprint` plus the job/result fingerprint before loading the full
+2. run `status STATE --compact`; if `wakeup_changed_since_ack` is false and the
+   current job/result fingerprint equals
+   `last_acknowledged_artifact_fingerprint`, exit before loading the full
    state, literature, or scientific reasoning; a next-check reschedule alone
    must not trigger full analysis, while an unanswered question crossing the
    20-minute batching boundary changes the semantic fingerprint once;
 3. when nothing changed, update the next meaningful check and exit without a
    narrative report;
 4. when a result changed, analyze it, update the scientific state, and launch at
-   most one next experiment batch before returning control;
-5. schedule no next wakeup when the user stopped, `PAUSED_FOR_PI` is active,
+   most one next experiment batch; only after those writes succeed, read compact
+   status again, then run `monitor-ack` with its new wakeup fingerprint and the
+   current artifact fingerprint;
+5. schedule no next wakeup when the user stopped, `PAUSED_FOR_PI` or
+   `PAUSED_BY_PI` is active,
    L1/L2 is invalid, the next action needs a macro decision or paid compute, no
    authorized work remains, or G3 is reached.
 
