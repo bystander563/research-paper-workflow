@@ -14,6 +14,7 @@ The user makes these decisions:
 - promote or replace the L2 problem, core mechanism, and innovation claim;
 - change another field explicitly frozen by the user;
 - approve paid compute or rental;
+- accept the project-specific risk of reporting favorably selected seeds;
 - approve a semantic change to stable project instructions when it changes
   authority, scope, protocol, permissions, or required validation and is not
   merely reflecting an already recorded owning decision;
@@ -21,8 +22,11 @@ The user makes these decisions:
 - authorize submission, publication, or an external send.
 
 Everything else is normally autonomous inside the confirmed project scope.
-Metrics, hyperparameters, routine debugging, clear failures, and individual
-candidate methods do not need approval.
+Before broad tuning, the agent locks the primary metric, its scale, and
+directionality. Setting or replacing that evaluation anchor does not need
+approval, nor do aggregation details, hyperparameters, routine debugging, clear
+failures, or individual candidate methods. A replacement anchor applies
+prospectively: evidence tied only to an older anchor cannot pass the paper gate.
 
 Direct user decisions must be captured in the state file even if no queued
 question preceded them. If an existing project is still doing active method
@@ -98,6 +102,15 @@ outcomes. Each question contains:
 
 Do not ask the user to approve routine implementation work or an obviously
 failed branch.
+
+One exception is a headline result formed by selecting favorable seeds from a
+larger pool. Before using that result for the paper gate, disclose the total
+seed pool, the selection rule, and the project-specific risk to the user in the
+current conversation and obtain a scoped approval. Those disclosure details
+must not be copied into L1/L2, result cards, the paper-decision report,
+`AGENTS.md`, `README.md`, or a manuscript. Durable state keeps only the minimum
+approval receipt needed to show that the risk was accepted for the current
+scientific story and evaluation-anchor revision.
 
 ## In-progress drift check
 
@@ -175,12 +188,36 @@ compaction are notifications, not questions. See
 [agents-maintenance.md](agents-maintenance.md); do not create a second approval
 system for instruction changes.
 
+## Unattended monitoring
+
+Use a host scheduled task only when the user explicitly asks for unattended
+monitoring and the host supports it. Treat it as a state-aware wakeup, not as a
+fixed 20-minute research loop:
+
+1. choose the next meaningful wake time from expected job progress or a known
+   decision boundary; the 20-minute mark is relevant only to an unanswered
+   question's batching/revisit condition;
+2. inspect compact controller state, job status, and an artifact or process
+   fingerprint before loading literature or doing full analysis;
+3. if nothing changed, update the next useful check and exit without repeating
+   reasoning or producing a report;
+4. if evidence changed, analyze it and launch at most one next authorized
+   experiment batch before scheduling another wakeup;
+5. stop future wakeups before costly work when five PI questions are active, a
+   required user decision blocks the branch, the paper gate is reached, the
+   user pauses/stops, or no authorized promising action remains.
+
+A failed experiment alone is not a stop condition when an already authorized,
+promising alternative remains. If scheduled tasks are unavailable, keep the
+job registry and next action current so a later task can resume safely.
+
 ## Execution defaults
 
 Within the current project and authorization:
 
 - use an available GPU by default;
 - identify and verify the external-baseline roster before broad ceiling tuning;
+- lock the primary metric, scale, and direction before broad ceiling tuning;
 - tune a promising method to estimate its current-project ceiling;
 - close low-potential methods after implementation, baseline, and diagnostic
   sanity checks;
@@ -192,15 +229,17 @@ Within the current project and authorization:
 
 ## Paper-ready decision
 
-Treat “good enough to write” as a PI decision. It requires confirmed L1/L2 state
-and assessment against the user-adopted evidence standard. Before creating that
-question, verify and source the strongest recent top-conference
-protocol-matched baseline, clear the configured gain floor of at least 1
-percentage point, and generate the project-local paper-decision report. Present:
+Treat “good enough to write” as a PI decision. It requires confirmed L1/L2
+state and assessment against the user-adopted evidence standard. Before
+creating that question, verify and source the strongest recent top-conference
+protocol-matched baseline, clear the configured numeric gain floor, establish
+project-appropriate repeat, uncertainty, or stability evidence, and generate
+the project-local paper-decision report. Present:
 
 - the current task, dataset, problem in current/nearest work, innovation, and concrete method;
 - final results plus the baseline venue/year/source and search scope,
-  protocol-match evidence, both scores, metric scale, computed point gain, and required floor;
+  protocol-match evidence, the current evaluation anchor and matching evidence,
+  both scores, computed point gain, required floor, and stability evidence;
 - the narrowest supported result;
 - the strongest matched external comparison;
 - the strongest remaining reviewer objection;

@@ -21,6 +21,7 @@ user confirms venue/time + domain (+ optional idea)
 -> scout meaningful task-dataset pairs
 -> USER L1: select task + dataset + project evidence standard
 -> map nearest work, external baselines, failure, method, and evidence
+-> agent locks the primary metric, scale, and direction before broad tuning
 -> tune only promising methods to estimate their current-project ceiling
 -> USER L2: promote problem + core mechanism + innovation claim
 -> complete the L1 evidence standard
@@ -45,6 +46,7 @@ The user decides:
 - any additional explicitly frozen project choice;
 - semantic changes to stable project instructions;
 - paid compute or rental;
+- project-specific acceptance of favorable-seed selection risk;
 - entry into paper writing and the headline claim;
 - external submission, publication, or sending.
 
@@ -73,10 +75,19 @@ supersedes every older unconsumed approval.
   dataset not previously exposed in the project, or report why none is
   currently feasible. This search is mandatory; adopting it as a second
   dataset or generalization requirement remains the user's L1 decision.
-- No generic sealed-set, external-label, metric, or evaluation protocol is
-  created by this skill. Put adopted requirements in L1.
+- No generic sealed-set, external-label, project-independent metric selection,
+  or evaluation protocol is created by this skill. Put adopted requirements in
+  L1 and the agent-owned project metric in the evaluation anchor.
 - External baselines are published methods or conventional comparators, not
   another dataset. Keep them separate from internal variants.
+- Before broad tuning, the agent must lock the higher-is-better primary metric,
+  its `0–1` or `0–100` scale, and its direction in the controller. This is an
+  agent-owned protocol anchor, not a new PI question. Replacing it invalidates
+  the previous anchor for the paper gate; earlier results remain exploratory
+  until evidence is produced or explicitly reassessed under the new anchor.
+- Do not impose a universal aggregation rule, seed count, or significance test.
+  The paper report must contain project-appropriate repeat, uncertainty, or
+  stability evidence.
 - “Ready for a paper decision” has a hard numeric floor: on the higher-is-better
   primary metric, the method must beat the strongest recent top-conference
   protocol-matched baseline by at least 1 percentage point. Interpret this as
@@ -119,10 +130,11 @@ Scout a small ranked shortlist. Show task meaning, task-data fit, headroom,
 nearest-work collision risk, external-baseline feasibility, cost, venue/time
 fit, the result of the unexposed-dataset search, and a recommendation. Ask the
 user to select the task-dataset pair and set the competitive bar, novelty
-sufficiency, generalization/second-dataset expectation, and paper-ready
-threshold. Store a numeric paper-gain floor of at least 1 percentage point with
-that standard. “Not required” and “decide later” are user choices for adoption,
-not permission to skip the search or lower this competitive floor.
+sufficiency, generalization/second-dataset expectation, and additional
+paper-ready requirements. These descriptive requirements may add conditions
+but cannot lower the separately stored numeric paper-gain floor of at least 1
+percentage point. “Not required” and “decide later” are user choices for
+adoption, not permission to skip the search or lower this competitive floor.
 
 Cheap verification may continue while waiting. Sustained method search and
 broad tuning require confirmed L1. Changing L1 requires a new scoped decision.
@@ -134,6 +146,10 @@ one concrete failure, derive a problem-to-intuition-to-mathematics mechanism,
 run a falsifiable screen, and tune only promising candidates. After a ceiling
 summary and external comparison exist, ask whether to promote the problem,
 core mechanism, and innovation claim.
+
+Before broad ceiling tuning, record the agent-owned evaluation anchor. Changing
+the metric name, scale, or direction later does not require PI approval, but the
+old anchor's results cannot directly satisfy the paper gate.
 
 L2 must link resolvable nearest-work, external-baseline, and result evidence.
 The best internal variant never becomes the story automatically. Changing L2
@@ -148,14 +164,23 @@ Do not ask for a paper decision unless the primary result clears the configured
 gain floor.
 
 First create a project-local paper-decision report containing the current task,
-dataset, the problem in current/nearest work, innovation, concrete method, final results,
-baseline identity/venue/year/source and literature-search scope, protocol-match
-evidence, metric scale, baseline and our score, computed point gain, required floor, every other L1 criterion, the
-narrowest supported claim, strongest remaining objection, and necessary versus
-optional work. Then ask whether to enter writing and which headline claim to
-use. Only a typed paper checkpoint may enter `paper_handoff_approved`. If the
-assessment changes after this gate, reassess it before seeking or consuming the
-paper decision.
+dataset, problem in current/nearest work, innovation, concrete method, final
+results, baseline identity/venue/year/source and literature-search scope,
+protocol-match evidence, the locked metric and scale, evidence tied to the
+current anchor, baseline and our score, computed point gain, required floor,
+project-appropriate stability evidence, every other L1 criterion, the narrowest
+supported claim, strongest remaining objection, and necessary versus optional
+work. Then ask whether to enter writing and which headline claim to use. Only a
+typed paper checkpoint may enter `paper_handoff_approved`. If the assessment
+changes after this gate, reassess it before seeking or consuming the paper
+decision.
+
+If the proposed headline result selects `n` favorable seeds from a larger pool,
+show the user the total pool, selection rule, and scientific risk in the
+decision conversation. This is a real scoped PI risk decision. Do not copy that
+detailed disclosure into L1/L2, result cards, the paper-decision report,
+`AGENTS.md`, README, or downstream manuscript artifacts. Keep only the minimal
+controller receipt needed to prove that the project-specific risk was accepted.
 
 ## Execution and collaboration
 
@@ -177,8 +202,16 @@ once. Notifications never count toward the cap.
 
 Continue independent authorized work while questions are unanswered. At five
 active PI decisions, set `PAUSED_FOR_PI` and stop at the next safe checkpoint.
-Register long-running work that must survive context compaction. The skill does
-not wake, poll, or schedule itself.
+Register long-running work that must survive context compaction. When the user
+explicitly requests unattended monitoring and the host supports scheduled
+tasks, use a scheduled task only as a state-aware wakeup: choose the next
+meaningful check time from job progress or the 20-minute question window, read
+compact durable state first, and avoid full reasoning when nothing changed.
+Pause or stop future wakeups before costly work when the user stops, five PI
+questions are active, L1/L2 is invalid, a macro choice or paid compute is
+required, or the paper gate is reached. If scheduled tasks are unavailable,
+fall back to the job registry and resume when a task is opened again. The
+controller records recovery state but does not itself schedule or poll.
 
 When the user asks what the agent is doing, challenges the rationale, or wants
 to discuss an in-progress method, run a read-only drift check. Trace the current

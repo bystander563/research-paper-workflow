@@ -79,7 +79,7 @@ they are not L1, L2, L3, or a replacement for the controller. They may tell an
 agent which active L1/L2 files or project truth sources to read, but must not
 copy their changing contents.
 
-The schema-v9 controller stores one project-local instruction-chain snapshot per
+The schema-v10 controller stores one project-local instruction-chain snapshot per
 audited working-directory scope plus a bounded set of update receipts containing
 paths, hashes, sizes, change classes, canonical compaction sources, reasons, and
 decision provenance. Scope-removal receipts are bounded separately; a missing
@@ -104,7 +104,8 @@ Record the research compass:
 - novelty sufficiency standard;
 - generalization, second-dataset, or other evidence requirement, including an
   explicit “not required” when that is the user's decision;
-- paper-decision threshold;
+- additional project-specific paper-ready requirements, which may tighten but
+  never lower the numeric gain floor;
 - numeric paper-gain floor: at least 1 percentage point over the strongest
   recent top-conference protocol-matched baseline; a project may set it higher.
 
@@ -140,7 +141,7 @@ The L1 decision packet states, in plain language:
 Record the exact PI instruction in the controller decision receipt. Code or early results
 do not imply selection.
 
-The schema-v9 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v10 L1 checkpoint separately stores the selected task type, dataset,
 mandatory unexposed-dataset search result, four descriptive evidence-standard
 fields plus the numeric paper-gain floor,
 approving outcome, durable-record path, and the record hash at confirmation. A
@@ -152,6 +153,18 @@ When a compass change invalidates L1, the controller replaces the visible
 current-direction and evidence-standard blocks with
 `STALE_AFTER_COMPASS_CHANGE`; it must not leave the old contract looking
 active.
+
+## Evaluation anchor
+
+Before broad tuning, the controller stores an agent-owned evaluation anchor
+containing the active direction ID, primary metric, `0–1` or `0–100` scale,
+higher-is-better directionality, revision, reason, and lock time. It deliberately
+does not define a universal aggregation rule. Setting or replacing this anchor
+does not require a PI decision.
+
+Replacement archives the prior anchor and applies prospectively. Evidence tied
+only to an older revision may remain useful for exploration, but it cannot pass
+the paper gate until rerun or explicitly reassessed under the current anchor.
 
 ## L2: scientific story for one direction
 
@@ -301,7 +314,7 @@ scientific-story checkpoint. Ask whether to promote the problem + core mechanism
 + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v9 L2 checkpoint stores the active direction ID, problem, core
+The schema-v10 L2 checkpoint stores the active direction ID, problem, core
 mechanism, innovation claim, external-baseline status, ceiling summary,
 approving outcome, durable-record path, and hashed references to the nearest-
 work, external-baseline, and result records used for the decision. A queued
@@ -329,10 +342,14 @@ decision packet, not just a pointer to experiment logs. It must contain:
    primary source, and literature-search venues/year range/date;
 7. protocol-match evidence covering task, data/split, labels,
    supervision/inference information, metric, and evaluation procedure;
-8. higher-is-better primary metric and scale (`0–1` or `0–100`), baseline score,
+8. current evaluation-anchor revision and evidence that the scored result was
+   produced or reassessed under it;
+9. higher-is-better primary metric and scale (`0–1` or `0–100`), baseline score,
    our score, computed percentage-point gain, and required L1 floor;
-9. competitive, novelty, generalization, and paper-threshold assessments;
-10. narrowest supported claim, remaining objection, and necessary versus
+10. project-appropriate repeat, uncertainty, or stability evidence, without a
+    universal seed count, aggregation method, or significance test;
+11. competitive, novelty, generalization, and additional paper-ready assessments;
+12. narrowest supported claim, remaining objection, and necessary versus
     optional work.
 
 The controller copies L1 task/dataset and L2 problem/innovation/mechanism into
@@ -341,6 +358,13 @@ active checkpoint IDs, and content-locks both the file and structured payload. T
 responsible for verifying top-conference status and protocol comparability from
 primary sources. A report that passes these mechanical checks is still evidence
 for the user's paper decision, not the decision itself.
+
+When the headline result uses favorable-seed selection, keep its detailed risk
+disclosure in the current user conversation only. Do not copy it into L1/L2,
+result cards, the paper-decision report, project instructions, repository
+documentation, or a manuscript. The controller stores only a minimal scoped
+receipt that the user accepted the risk for the active scientific story and
+evaluation-anchor revision.
 
 ## L3: implementation and execution
 
@@ -396,9 +420,9 @@ headline claim.
 
 ## Legacy-state audit
 
-Schema-v1 through schema-v8 states are readable. Unstructured L1/L2 approvals,
+Schema-v1 through schema-v9 states are readable. Unstructured L1/L2 approvals,
 unscoped decision questions, or schema-v4 L2 checkpoints without evidence
-references are marked for audit and do not satisfy schema-v9 gates. Schema-v5
+references are marked for audit and do not satisfy schema-v10 gates. Schema-v5
 scientific checkpoints retain their meaning while receiving an instruction-
 maintenance state during migration. Schema-v6 instruction snapshots migrate to
 the matching scope, and decision questions receive ordered target revisions so
@@ -406,7 +430,9 @@ an older unconsumed approval cannot override a newer decision. Schema-v7 states
 receive bounded scope-removal history, and a confirmed direction without the
 mandatory unexposed-dataset search result requires reconfirmation. A schema-v8
 confirmed direction without the numeric paper-gain floor also requires
-reconfirmation. Existing scoped approvals
+reconfirmation. Schema-v9 paper assessments receive a legacy evaluation-anchor
+receipt and explicit missing-evidence markers during migration; they do not
+become prospective locks retroactively. Existing scoped approvals
 already linked from a checkpoint are migrated as consumed by that checkpoint;
 do not silently turn an unrelated old summary into new user approval. Run
 `research_queue.py audit STATE` after migration.

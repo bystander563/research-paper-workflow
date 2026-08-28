@@ -178,6 +178,27 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.l2,
         )
 
+    def set_evaluation_anchor(
+        self,
+        primary_metric: str = "balanced accuracy",
+        metric_scale: str = "unit_interval",
+        reason: str = "official task metric selected before broad tuning",
+        ok: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        return self.run_cli(
+            "evaluation-anchor",
+            self.state,
+            "--primary-metric",
+            primary_metric,
+            "--metric-scale",
+            metric_scale,
+            "--metric-direction",
+            "higher_is_better",
+            "--reason",
+            reason,
+            ok=ok,
+        )
+
     def enter_paper_ready(
         self,
         assessment: Path,
@@ -185,8 +206,17 @@ class ResearchQueueCLITest(unittest.TestCase):
         metric_scale: str = "unit_interval",
         baseline_score: float = 0.80,
         our_score: float = 0.82,
+        primary_metric: str = "balanced accuracy",
+        favorable_seed_selection: bool = False,
+        seed_risk_decision_id: str | None = None,
+        seed_risk_pi_decision: str | None = None,
+        seed_risk_pi_outcome: str | None = None,
+        set_anchor: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        return self.run_cli(
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        if set_anchor and state.get("evaluation_anchor") is None:
+            self.set_evaluation_anchor(primary_metric, metric_scale)
+        args = [
             "phase",
             self.state,
             "--set",
@@ -225,16 +255,28 @@ class ResearchQueueCLITest(unittest.TestCase):
             "baseline citation and result table recorded in L2",
             "--protocol-match-evidence",
             "same dataset, split, labels, metric, and evaluation procedure",
+            "--evaluation-anchor-evidence",
+            "the decision result was produced under the current metric anchor",
+            "--stability-evidence",
+            "project-appropriate repeat and uncertainty checks support the result",
             "--primary-metric",
-            "balanced accuracy",
+            primary_metric,
             "--metric-scale",
             metric_scale,
             "--baseline-score",
             str(baseline_score),
             "--our-score",
             str(our_score),
-            ok=ok,
-        )
+        ]
+        if favorable_seed_selection:
+            args.append("--favorable-seed-selection")
+        if seed_risk_decision_id is not None:
+            args.extend(["--seed-risk-decision-id", seed_risk_decision_id])
+        if seed_risk_pi_decision is not None:
+            args.extend(["--seed-risk-pi-decision", seed_risk_pi_decision])
+        if seed_risk_pi_outcome is not None:
+            args.extend(["--seed-risk-pi-outcome", seed_risk_pi_outcome])
+        return self.run_cli(*args, ok=ok)
 
     def test_init_creates_scaffold_and_cannot_start_late(self) -> None:
         output = self.run_cli("init", self.state, "--project", "demo")
@@ -437,6 +479,149 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("Confirmed paper checkpoint", assessment.read_text(encoding="utf-8"))
         stored = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertIn("sha256_after_handoff", stored["paper_ready_assessment"])
+        self.run_cli("audit", self.state)
+
+    def test_paper_gate_requires_pre_tuning_metric_anchor(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-no-anchor.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+
+        blocked = self.enter_paper_ready(
+            assessment,
+            set_anchor=False,
+            ok=False,
+        )
+        self.assertIn("evaluation anchor locked before broad tuning", blocked.stderr)
+
+    def test_replacing_metric_anchor_blocks_old_metric_at_paper_gate(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.set_evaluation_anchor("balanced accuracy")
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_evaluation_anchor(
+            "macro F1",
+            reason="the official matched comparator uses macro F1",
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["evaluation_anchor"]["revision"], 2)
+        self.assertNotIn("aggregation", state["evaluation_anchor"])
+        self.assertEqual(len(state["evaluation_anchor_history"]), 1)
+
+        assessment = self.root / "paper-ready-anchor-replaced.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+        blocked = self.enter_paper_ready(
+            assessment,
+            primary_metric="balanced accuracy",
+            set_anchor=False,
+            ok=False,
+        )
+        self.assertIn("must match the current evaluation anchor", blocked.stderr)
+
+        self.enter_paper_ready(
+            assessment,
+            primary_metric="macro F1",
+            set_anchor=False,
+        )
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stored["paper_ready_assessment"]["evaluation_anchor_revision"], 2
+        )
+
+    def test_favorable_seed_selection_requires_private_scoped_pi_acceptance(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.set_evaluation_anchor()
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-selected-seeds.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+
+        blocked = self.enter_paper_ready(
+            assessment,
+            favorable_seed_selection=True,
+            set_anchor=False,
+            ok=False,
+        )
+        self.assertIn("Favorable-seed selection requires", blocked.stderr)
+
+        private_queue_marker = "PRIVATE_QUEUED_SEED_POOL_RULE_AND_RISK_DETAIL"
+        risk_question = self.add_answer(
+            "paper",
+            private_queue_marker,
+            outcome="approve",
+            decision=private_queue_marker,
+            target="paper:seed-selection-risk:S001:anchor-1",
+        )
+        self.enter_paper_ready(
+            assessment,
+            favorable_seed_selection=True,
+            seed_risk_decision_id=risk_question,
+            set_anchor=False,
+        )
+        state_text = self.state.read_text(encoding="utf-8")
+        self.assertNotIn(private_queue_marker, state_text)
+        stored = json.loads(state_text)
+        acceptance = stored["seed_selection_risk_acceptance"]
+        self.assertTrue(acceptance["accepted"])
+        self.assertEqual(acceptance["science_id"], "S001")
+        self.assertEqual(
+            set(acceptance),
+            {
+                "accepted",
+                "science_id",
+                "evaluation_anchor_revision",
+                "decision_source",
+                "accepted_at",
+                "assessment_payload_sha256",
+            },
+        )
+        self.assertEqual(
+            set(acceptance["decision_source"]),
+            {"type", "question_id", "outcome"},
+        )
+        question = next(
+            item for item in stored["macro_questions"] if item["id"] == risk_question
+        )
+        self.assertEqual(question["consumed_by"]["type"], "seed_selection_risk")
+        report_text = assessment.read_text(encoding="utf-8")
+        self.assertNotIn("favorable_seed_selection", report_text)
+        self.assertNotIn("seed-selection-risk", report_text)
+        self.run_cli("audit", self.state)
+
+    def test_direct_seed_risk_disclosure_text_is_not_persisted(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.set_evaluation_anchor()
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment = self.root / "paper-ready-private-seed-risk.md"
+        assessment.write_text("# Paper ready\n", encoding="utf-8")
+        private_marker = "PRIVATE_SEED_POOL_RULE_AND_RISK_DETAIL"
+
+        self.enter_paper_ready(
+            assessment,
+            favorable_seed_selection=True,
+            seed_risk_pi_decision=private_marker,
+            seed_risk_pi_outcome="approve",
+            set_anchor=False,
+        )
+        state_text = self.state.read_text(encoding="utf-8")
+        report_text = assessment.read_text(encoding="utf-8")
+        self.assertNotIn(private_marker, state_text)
+        self.assertNotIn(private_marker, report_text)
+        stored = json.loads(state_text)
+        self.assertEqual(
+            stored["seed_selection_risk_acceptance"]["decision_source"],
+            {"type": "direct_pi_instruction", "outcome": "approve"},
+        )
         self.run_cli("audit", self.state)
 
     def test_paper_assessment_drift_blocks_handoff_and_remains_detectable(self) -> None:
@@ -823,7 +1008,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
         summary = json.loads(self.run_cli("status", self.state).stdout)
-        self.assertEqual(summary["schema_version"], 9)
+        self.assertEqual(summary["schema_version"], 10)
         self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
         self.assertEqual(
             summary["instruction_maintenance"]["recent_updates"], []
@@ -1456,6 +1641,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.add_answer("direction", "Choose D001?", outcome="select")
         )
         self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_evaluation_anchor()
         assessment = self.root / "paper-ready.md"
         assessment.write_text("# Paper ready\n", encoding="utf-8")
         result = self.run_cli(
@@ -1474,6 +1660,8 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("baseline_venue_year", result.stderr)
         self.assertIn("baseline_search_scope", result.stderr)
         self.assertIn("baseline_score", result.stderr)
+        self.assertIn("evaluation_anchor_evidence", result.stderr)
+        self.assertIn("stability_evidence", result.stderr)
 
     def test_direction_cannot_lower_one_point_paper_floor(self) -> None:
         self.init_exploration()
@@ -1570,11 +1758,48 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(migrated["schema_version"], 10)
         self.assertEqual(
             migrated["layer_checkpoints"]["direction"]["status"],
             "LEGACY_CONFIRMED_NEEDS_AUDIT",
         )
+
+    def test_schema_v9_paper_assessment_receives_legacy_anchor_markers(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        assessment_path = self.root / "paper-ready-schema-v9.md"
+        assessment_path.write_text("# Candidate paper\n", encoding="utf-8")
+        self.enter_paper_ready(assessment_path)
+
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 9
+        state.pop("evaluation_anchor", None)
+        state.pop("evaluation_anchor_history", None)
+        state.pop("seed_selection_risk_acceptance", None)
+        legacy_assessment = state["paper_ready_assessment"]
+        for field in (
+            "evaluation_anchor_revision",
+            "metric_direction",
+            "evaluation_anchor_evidence",
+            "stability_evidence",
+            "favorable_seed_selection",
+        ):
+            legacy_assessment.pop(field, None)
+        legacy_assessment["payload_sha256_at_gate"] = "legacy-schema-v9"
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        self.run_cli("notify", self.state, "--text", "save schema-v10 migration")
+        migrated = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 10)
+        self.assertTrue(migrated["evaluation_anchor"]["legacy_derived"])
+        self.assertEqual(migrated["evaluation_anchor"]["revision"], 1)
+        migrated_assessment = migrated["paper_ready_assessment"]
+        self.assertIn("Legacy schema-v9", migrated_assessment["stability_evidence"])
+        self.assertFalse(migrated_assessment["favorable_seed_selection"])
+        self.assertIsNone(migrated["seed_selection_risk_acceptance"])
 
     def test_recent_notifications_are_bounded(self) -> None:
         self.init_exploration()
@@ -2184,7 +2409,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("notify", self.state, "--text", "save migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
         questions = {q["id"]: q for q in migrated["macro_questions"]}
-        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(migrated["schema_version"], 10)
         self.assertEqual(questions[first]["superseded_by"], second)
         self.assertEqual(
             migrated["decision_target_revisions"]["direction:D001"], 2
@@ -2203,7 +2428,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(migrated["schema_version"], 10)
         self.assertEqual(
             migrated["instruction_maintenance"]["recent_scope_removals"], []
         )

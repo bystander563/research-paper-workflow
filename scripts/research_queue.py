@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 9
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+SCHEMA_VERSION = 10
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
 MIN_PAPER_READY_GAIN_POINTS = 1.0
 MAX_MACRO_QUESTIONS = 5
 RECENT_NOTIFICATION_LIMIT = 50
@@ -85,6 +85,8 @@ VALID_PHASES = {
 }
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 JOB_STATUSES = ACTIVE_JOB_STATUSES | {"completed", "failed", "cancelled", "blocked"}
+METRIC_DIRECTIONS = {"higher_is_better"}
+SEED_SELECTION_RISK_TARGET_PREFIX = "paper:seed-selection-risk:"
 PAPER_ASSESSMENT_TEXT_FIELDS = (
     "competitive_bar_assessment",
     "novelty_assessment",
@@ -103,6 +105,8 @@ PAPER_ASSESSMENT_TEXT_FIELDS = (
     "baseline_source",
     "protocol_match_evidence",
     "primary_metric",
+    "evaluation_anchor_evidence",
+    "stability_evidence",
 )
 PAPER_ASSESSMENT_NUMERIC_FIELDS = ("baseline_score", "our_score")
 PAPER_ASSESSMENT_CLI_FIELDS = (
@@ -118,13 +122,17 @@ PAPER_ASSESSMENT_CONTEXT_FIELDS = (
     "core_mechanism",
     "minimum_paper_gain_points",
     "improvement_points",
+    "evaluation_anchor_revision",
+    "metric_direction",
 )
 PAPER_ASSESSMENT_PAYLOAD_FIELDS = (
     "direction_id",
     "science_id",
     *PAPER_ASSESSMENT_CONTEXT_FIELDS,
     *PAPER_ASSESSMENT_CLI_FIELDS,
+    "favorable_seed_selection",
 )
+PRIVATE_PAPER_CONTROL_FIELDS = {"favorable_seed_selection"}
 RESERVED_FROZEN_KEYS = {
     "venue",
     "venue_or_window",
@@ -210,6 +218,39 @@ def calculate_improvement_points(
     return round(gain, 10)
 
 
+def evaluation_anchor_complete(anchor: Any) -> bool:
+    if not isinstance(anchor, dict):
+        return False
+    if not isinstance(anchor.get("revision"), int) or anchor["revision"] < 1:
+        return False
+    if any(
+        not isinstance(anchor.get(field), str) or not anchor[field].strip()
+        for field in (
+            "direction_id",
+            "primary_metric",
+            "metric_scale",
+            "metric_direction",
+            "locked_at",
+            "reason",
+        )
+    ):
+        return False
+    return (
+        anchor["metric_scale"] in {"unit_interval", "percentage"}
+        and anchor["metric_direction"] in METRIC_DIRECTIONS
+    )
+
+
+def evaluation_anchor_usable(state: dict[str, Any]) -> bool:
+    anchor = state.get("evaluation_anchor")
+    direction = state.get("layer_checkpoints", {}).get("direction", {})
+    return bool(
+        evaluation_anchor_complete(anchor)
+        and direction.get("status") == "CONFIRMED_BY_PI"
+        and anchor.get("direction_id") == direction.get("id")
+    )
+
+
 def paper_assessment_complete(assessment: Any) -> bool:
     if not isinstance(assessment, dict):
         return False
@@ -220,6 +261,14 @@ def paper_assessment_complete(assessment: Any) -> bool:
     ):
         return False
     if assessment.get("metric_scale") not in {"unit_interval", "percentage"}:
+        return False
+    if assessment.get("metric_direction") not in METRIC_DIRECTIONS:
+        return False
+    if not isinstance(assessment.get("evaluation_anchor_revision"), int) or assessment[
+        "evaluation_anchor_revision"
+    ] < 1:
+        return False
+    if not isinstance(assessment.get("favorable_seed_selection"), bool):
         return False
     if any(
         not finite_number(assessment.get(field))
@@ -327,6 +376,9 @@ def initial_state(project: str) -> dict[str, Any]:
             layer: empty_checkpoint() for layer in CHECKPOINT_LAYERS
         },
         "checkpoint_history": [],
+        "evaluation_anchor": None,
+        "evaluation_anchor_history": [],
+        "seed_selection_risk_acceptance": None,
         "paper_ready_assessment": None,
         "macro_questions": [],
         "decision_target_revisions": {},
@@ -476,6 +528,51 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
             or legacy_minimum < MIN_PAPER_READY_GAIN_POINTS
         ):
             direction["status"] = "LEGACY_CONFIRMED_NEEDS_AUDIT"
+    if version in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
+        state.setdefault("evaluation_anchor_history", [])
+        state.setdefault("seed_selection_risk_acceptance", None)
+        assessment = state.get("paper_ready_assessment")
+        if (
+            isinstance(assessment, dict)
+            and assessment.get("primary_metric")
+            and assessment.get("metric_scale")
+        ):
+            locked_at = (
+                assessment.get("recorded_at")
+                or state.get("updated_at")
+                or now_iso()
+            )
+            anchor = {
+                "revision": 1,
+                "direction_id": assessment.get("direction_id"),
+                "primary_metric": assessment.get("primary_metric"),
+                "metric_scale": assessment.get("metric_scale"),
+                "metric_direction": "higher_is_better",
+                "locked_at": locked_at,
+                "reason": (
+                    "Migrated from a schema-v9 paper assessment; prospective "
+                    "pre-tuning lock timing was not recorded"
+                ),
+                "legacy_derived": True,
+            }
+            if not isinstance(state.get("evaluation_anchor"), dict):
+                state["evaluation_anchor"] = anchor
+            assessment.setdefault("evaluation_anchor_revision", 1)
+            assessment.setdefault("metric_direction", "higher_is_better")
+            assessment.setdefault(
+                "evaluation_anchor_evidence",
+                "Legacy schema-v9 assessment imported without a prospective lock receipt",
+            )
+            assessment.setdefault(
+                "stability_evidence",
+                "Legacy schema-v9 assessment did not structurally capture stability evidence",
+            )
+            assessment.setdefault("favorable_seed_selection", False)
+            assessment["payload_sha256_at_gate"] = paper_assessment_payload_sha256(
+                assessment
+            )
+        else:
+            state.setdefault("evaluation_anchor", None)
     state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -501,6 +598,7 @@ def load_state(path: Path) -> dict[str, Any]:
         "frozen_history": list,
         "layer_checkpoints": dict,
         "checkpoint_history": list,
+        "evaluation_anchor_history": list,
         "macro_questions": list,
         "decision_target_revisions": dict,
         "notifications": list,
@@ -512,6 +610,16 @@ def load_state(path: Path) -> dict[str, Any]:
             raise SystemExit(
                 f"Invalid state field {key!r}: expected {expected_type.__name__}"
             )
+    if state.get("evaluation_anchor") is not None and not isinstance(
+        state.get("evaluation_anchor"), dict
+    ):
+        raise SystemExit("Invalid evaluation_anchor: expected an object or null")
+    if state.get("seed_selection_risk_acceptance") is not None and not isinstance(
+        state.get("seed_selection_risk_acceptance"), dict
+    ):
+        raise SystemExit(
+            "Invalid seed_selection_risk_acceptance: expected an object or null"
+        )
     for layer in CHECKPOINT_LAYERS:
         checkpoint = state["layer_checkpoints"].get(layer)
         if not isinstance(checkpoint, dict):
@@ -831,6 +939,11 @@ def append_checkpoint_receipt(
 
 
 def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> None:
+    public_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in PRIVATE_PAPER_CONTROL_FIELDS
+    }
     receipt = (
         "\n\n## Paper-decision report\n\n"
         f"- Recorded at: {now_iso()}\n"
@@ -847,8 +960,13 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         f"- Baseline search scope: {payload['baseline_search_scope']}\n"
         f"- Baseline source: {payload['baseline_source']}\n"
         f"- Protocol-match evidence: {payload['protocol_match_evidence']}\n"
+        "- Evaluation anchor: revision "
+        f"{payload['evaluation_anchor_revision']} | "
+        f"direction `{payload['metric_direction']}`\n"
         f"- Primary metric: {payload['primary_metric']}\n"
         f"- Metric scale: `{payload['metric_scale']}`\n"
+        f"- Evaluation-anchor evidence: {payload['evaluation_anchor_evidence']}\n"
+        f"- Stability evidence: {payload['stability_evidence']}\n"
         f"- Baseline score: {payload['baseline_score']:.10g}\n"
         f"- Our score: {payload['our_score']:.10g}\n"
         "- Improvement (percentage points): "
@@ -858,7 +976,7 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         f"- Competitive-bar assessment: {payload['competitive_bar_assessment']}\n"
         f"- Novelty assessment: {payload['novelty_assessment']}\n"
         f"- Generalization assessment: {payload['generalization_assessment']}\n"
-        "- Paper-ready-threshold assessment: "
+        "- Additional paper-ready-requirements assessment: "
         f"{payload['paper_ready_threshold_assessment']}\n"
         f"- Narrowest supported claim: {payload['narrowest_supported_claim']}\n"
         f"- Strongest matched comparison: {payload['strongest_matched_comparison']}\n"
@@ -869,7 +987,7 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         "the configured evidence floor is met.\n\n"
         "- Structured assessment:\n\n"
         "```json\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        + json.dumps(public_payload, ensure_ascii=False, indent=2, sort_keys=True)
         + "\n```\n"
     )
     with record.open("a", encoding="utf-8", newline="") as handle:
@@ -950,7 +1068,7 @@ def l1_context_body(direction_id: str, payload: dict[str, Any]) -> str:
         f"competitive={standard['competitive_bar']} | "
         f"novelty={standard['novelty_sufficiency']} | "
         f"generalization={standard['generalization_requirement']} | "
-        f"paper-ready={standard['paper_ready_threshold']} | "
+        f"additional-paper-ready={standard['paper_ready_threshold']} | "
         "minimum gain over the strongest recent top-conference protocol-matched "
         f"baseline={standard['minimum_paper_gain_points']:.10g} percentage points  \n"
         f"L1 confirmation source: direction checkpoint `{direction_id}` in workflow state"
@@ -1014,7 +1132,8 @@ def update_record_placeholders(
             f"- Novelty sufficiency: {standard['novelty_sufficiency']}\n"
             "- Generalization or second-dataset requirement: "
             f"{standard['generalization_requirement']}\n"
-            f"- Paper-ready threshold: {standard['paper_ready_threshold']}\n"
+            "- Additional paper-ready requirements: "
+            f"{standard['paper_ready_threshold']}\n"
             "- Minimum gain over the strongest recent top-conference protocol-matched "
             f"baseline: {standard['minimum_paper_gain_points']:.10g} percentage points",
             "## Project evidence standard",
@@ -1085,7 +1204,7 @@ def ensure_scaffold(state_path: Path, project: str) -> None:
             "- Competitive bar: UNSET\n"
             "- Novelty sufficiency: UNSET\n"
             "- Generalization or second-dataset requirement: UNSET\n"
-            "- Paper-ready threshold: UNSET\n"
+            "- Additional paper-ready requirements: UNSET\n"
             "- Minimum gain over the strongest recent top-conference protocol-matched baseline: 1 percentage point\n"
             "<!-- RPW:DIRECTION_STANDARD_CURRENT:END -->\n\n"
             "## Ranked directions\n\n"
@@ -1274,6 +1393,46 @@ def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bo
     return True
 
 
+def seed_selection_risk_acceptance_usable(
+    state: dict[str, Any], assessment: dict[str, Any]
+) -> bool:
+    if not assessment.get("favorable_seed_selection"):
+        return True
+    acceptance = state.get("seed_selection_risk_acceptance")
+    if not isinstance(acceptance, dict) or not acceptance.get("accepted"):
+        return False
+    source = acceptance.get("decision_source") or {}
+    if source.get("outcome") not in APPROVING_OUTCOMES:
+        return False
+    if (
+        acceptance.get("science_id") != assessment.get("science_id")
+        or acceptance.get("evaluation_anchor_revision")
+        != assessment.get("evaluation_anchor_revision")
+        or acceptance.get("assessment_payload_sha256")
+        != paper_assessment_payload_sha256(assessment)
+    ):
+        return False
+    if source.get("type") == "answered_question":
+        matches = [
+            question
+            for question in state.get("macro_questions", [])
+            if question.get("id") == source.get("question_id")
+        ]
+        expected = {
+            "type": "seed_selection_risk",
+            "science_id": assessment.get("science_id"),
+            "evaluation_anchor_revision": assessment.get(
+                "evaluation_anchor_revision"
+            ),
+        }
+        if not matches or any(
+            (matches[0].get("consumed_by") or {}).get(key) != value
+            for key, value in expected.items()
+        ):
+            return False
+    return True
+
+
 def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bool:
     assessment = state.get("paper_ready_assessment")
     if not paper_assessment_complete(assessment):
@@ -1286,6 +1445,7 @@ def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bo
     science = state["layer_checkpoints"].get("science", {})
     direction_payload = direction.get("payload") or {}
     science_payload = science.get("payload") or {}
+    anchor = state.get("evaluation_anchor") or {}
     minimum_gain = (direction_payload.get("evidence_standard") or {}).get(
         "minimum_paper_gain_points"
     )
@@ -1297,11 +1457,18 @@ def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bo
         or assessment.get("current_work_problem") != science_payload.get("problem")
         or assessment.get("innovation") != science_payload.get("innovation_claim")
         or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
+        or not evaluation_anchor_usable(state)
+        or assessment.get("evaluation_anchor_revision") != anchor.get("revision")
+        or assessment.get("primary_metric") != anchor.get("primary_metric")
+        or assessment.get("metric_scale") != anchor.get("metric_scale")
+        or assessment.get("metric_direction") != anchor.get("metric_direction")
         or not finite_number(minimum_gain)
         or not math.isclose(
             assessment.get("minimum_paper_gain_points"), minimum_gain, abs_tol=1e-9
         )
     ):
+        return False
+    if not seed_selection_risk_acceptance_usable(state, assessment):
         return False
     record = resolve_stored_path(state_path, assessment.get("path"))
     if (
@@ -1342,7 +1509,26 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "P0" if layer in {"direction", "science", "paper"} else "P1",
                 f"Phase {state['phase']} requires a complete typed {layer} checkpoint",
             )
+    anchor = state.get("evaluation_anchor")
+    if anchor is not None and not evaluation_anchor_complete(anchor):
+        add(
+            "EVALUATION_ANCHOR_INCOMPLETE",
+            "P0",
+            "The evaluation anchor must contain a direction, primary metric, scale, directionality, revision, reason, and lock time",
+        )
+    elif anchor is not None and not evaluation_anchor_usable(state):
+        add(
+            "EVALUATION_ANCHOR_DIRECTION_MISMATCH",
+            "P0",
+            "The evaluation anchor is not tied to the active confirmed L1 direction",
+        )
     if state["phase"] in {"paper_ready_pending_pi", "paper_handoff_approved"}:
+        if not evaluation_anchor_usable(state):
+            add(
+                "EVALUATION_ANCHOR_REQUIRED",
+                "P0",
+                "Paper-ready phases require a usable pre-tuning evaluation anchor",
+            )
         assessment = state.get("paper_ready_assessment")
         if not isinstance(assessment, dict) or not assessment.get("path"):
             add(
@@ -1357,6 +1543,12 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                 "Paper-ready assessment must include the decision report and meet the numeric gain floor",
             )
         else:
+            if not seed_selection_risk_acceptance_usable(state, assessment):
+                add(
+                    "FAVORABLE_SEED_RISK_UNAPPROVED",
+                    "P0",
+                    "A favorable-seed paper result requires a scoped PI risk acceptance",
+                )
             assessment_path = resolve_stored_path(state_path, assessment.get("path"))
             if not assessment_path or not assessment_path.is_file():
                 add(
@@ -1385,7 +1577,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"LEGACY_{layer.upper()}_NEEDS_RECONFIRMATION",
                 "P0" if layer in {"direction", "science"} else "P1",
-                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v9",
+                f"Legacy {layer} approval lacks the structured payload or evidence links required by schema v10",
             )
         record = resolve_stored_path(state_path, checkpoint.get("record_path"))
         if checkpoint.get("status") == "CONFIRMED_BY_PI" and (
@@ -1410,7 +1602,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             add(
                 f"{layer.upper()}_CONFIRMED_PAYLOAD_INCOMPLETE",
                 "P0",
-                f"Confirmed {layer} checkpoint lacks required schema-v9 control fields",
+                f"Confirmed {layer} checkpoint lacks required schema-v10 control fields",
             )
         if (
             layer == "paper"
@@ -1502,6 +1694,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
     assessment = state.get("paper_ready_assessment") or {}
     direction_payload = direction.get("payload") or {}
     science_payload = science.get("payload") or {}
+    assessment_anchor = state.get("evaluation_anchor") or {}
     direction_minimum = (direction_payload.get("evidence_standard") or {}).get(
         "minimum_paper_gain_points"
     )
@@ -1519,6 +1712,12 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         or assessment.get("current_work_problem") != science_payload.get("problem")
         or assessment.get("innovation") != science_payload.get("innovation_claim")
         or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
+        or assessment.get("evaluation_anchor_revision")
+        != assessment_anchor.get("revision")
+        or assessment.get("primary_metric") != assessment_anchor.get("primary_metric")
+        or assessment.get("metric_scale") != assessment_anchor.get("metric_scale")
+        or assessment.get("metric_direction")
+        != assessment_anchor.get("metric_direction")
         or minimum_mismatch
     ):
         add(
@@ -1872,6 +2071,13 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "deferred_pi_questions": deferred,
         "unused_approvals": unused_approvals,
         "layer_checkpoints": state["layer_checkpoints"],
+        "evaluation_anchor": state.get("evaluation_anchor"),
+        "evaluation_anchor_history_count": len(
+            state.get("evaluation_anchor_history", [])
+        ),
+        "seed_selection_risk_acceptance": state.get(
+            "seed_selection_risk_acceptance"
+        ),
         "missing_required_checkpoints": [
             layer
             for layer in required_layers_for_phase(state["phase"])
@@ -2009,6 +2215,14 @@ def cmd_question(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"A {args.layer} question target must start with {args.layer}:"
         )
+    private_seed_risk = target.startswith(SEED_SELECTION_RISK_TARGET_PREFIX)
+    if private_seed_risk:
+        if args.layer != "paper":
+            raise SystemExit("A favorable-seed risk question must use --layer paper")
+        question_text = (
+            "Accept the project-specific favorable-seed risk already disclosed "
+            "in the current user conversation?"
+        )
     question_id = next_id(state["macro_questions"], "Q")
     revisions = state.setdefault("decision_target_revisions", {})
     target_revision = int(revisions.get(target, 0)) + 1
@@ -2028,9 +2242,21 @@ def cmd_question(args: argparse.Namespace) -> None:
         "superseded_by": None,
         "text": question_text,
         "priority": args.priority,
-        "reason": args.reason,
-        "recommendation": args.recommendation,
-        "continue_plan": args.continue_plan,
+        "reason": (
+            "The paper gate requires scoped user acceptance for this private risk."
+            if private_seed_risk
+            else args.reason
+        ),
+        "recommendation": (
+            "Use only the user's conversation-level decision."
+            if private_seed_risk
+            else args.recommendation
+        ),
+        "continue_plan": (
+            "Continue independent authorized work; do not use this result at the paper gate."
+            if private_seed_risk
+            else args.continue_plan
+        ),
         "created_at": now_iso(),
         "answered_at": None,
         "decision": None,
@@ -2065,6 +2291,10 @@ def cmd_answer(args: argparse.Namespace) -> None:
     decision_text = str(args.decision).strip()
     if not decision_text:
         raise SystemExit("A PI reply requires non-empty --decision")
+    if str(question.get("decision_target") or "").startswith(
+        SEED_SELECTION_RISK_TARGET_PREFIX
+    ):
+        decision_text = "PI response recorded for the private favorable-seed risk."
     response = {
         "text": decision_text,
         "outcome": args.outcome,
@@ -2725,6 +2955,45 @@ def consume_question(
     question["consumed_by"] = {**consumer, "consumed_at": now_iso()}
 
 
+def seed_selection_risk_decision_source(
+    state: dict[str, Any],
+    args: argparse.Namespace,
+    science_id: str,
+    anchor_revision: int,
+) -> dict[str, str]:
+    expected_target = (
+        f"paper:seed-selection-risk:{science_id}:anchor-{anchor_revision}"
+    )
+    if args.seed_risk_decision_id:
+        question = current_answered_approval(
+            state,
+            args.seed_risk_decision_id,
+            "paper",
+            expected_target,
+            "favorable-seed selection risk acceptance",
+        )
+        return {
+            "type": "answered_question",
+            "question_id": args.seed_risk_decision_id,
+            "outcome": str(question["outcome"]),
+        }
+    direct_decision = str(args.seed_risk_pi_decision or "").strip()
+    if not direct_decision:
+        raise SystemExit(
+            "Favorable-seed selection requires --seed-risk-decision-id or the "
+            "user's direct --seed-risk-pi-decision"
+        )
+    if args.seed_risk_pi_outcome not in APPROVING_OUTCOMES:
+        raise SystemExit(
+            "Direct favorable-seed risk acceptance requires "
+            "--seed-risk-pi-outcome approve or select"
+        )
+    return {
+        "type": "direct_pi_instruction",
+        "outcome": args.seed_risk_pi_outcome,
+    }
+
+
 def checkpoint_payload(
     args: argparse.Namespace, state_path: Path, state: dict[str, Any]
 ) -> dict[str, Any]:
@@ -2924,6 +3193,83 @@ def invalidate_checkpoint(
     state["layer_checkpoints"][layer] = stale
 
 
+def invalidate_evaluation_anchor(
+    state: dict[str, Any], reason: str, replacement_id: str
+) -> None:
+    anchor = state.get("evaluation_anchor")
+    if isinstance(anchor, dict):
+        state.setdefault("evaluation_anchor_history", []).append(
+            {
+                **anchor,
+                "invalidated_at": now_iso(),
+                "invalidated_by": reason,
+                "replacement_id": replacement_id,
+            }
+        )
+    state["evaluation_anchor"] = None
+    state["seed_selection_risk_acceptance"] = None
+
+
+def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    require_execution_active(state, "set the evaluation anchor")
+    if state.get("phase") != "confirmed_project":
+        raise SystemExit(
+            "The evaluation anchor may be set or replaced only in confirmed_project; "
+            "leave the paper gate before changing it"
+        )
+    if not checkpoint_usable(path, state, "direction"):
+        raise SystemExit("A usable confirmed L1 direction is required")
+    primary_metric = str(args.primary_metric or "").strip()
+    reason = str(args.reason or "").strip()
+    if not primary_metric or not reason:
+        raise SystemExit(
+            "Evaluation anchoring requires non-empty --primary-metric and --reason"
+        )
+    direction_id = state["layer_checkpoints"]["direction"].get("id")
+    current = state.get("evaluation_anchor")
+    identity = {
+        "direction_id": direction_id,
+        "primary_metric": primary_metric,
+        "metric_scale": args.metric_scale,
+        "metric_direction": args.metric_direction,
+    }
+    if isinstance(current, dict) and all(
+        current.get(key) == value for key, value in identity.items()
+    ):
+        raise SystemExit("Evaluation anchor is already set to these values")
+    revision = 1
+    if isinstance(current, dict):
+        revision = int(current.get("revision") or 0) + 1
+        state.setdefault("evaluation_anchor_history", []).append(
+            {
+                **current,
+                "replaced_at": now_iso(),
+                "replacement_reason": reason,
+                "replacement_revision": revision,
+            }
+        )
+    elif state.get("evaluation_anchor_history"):
+        prior_revisions = [
+            int(item.get("revision") or 0)
+            for item in state["evaluation_anchor_history"]
+            if isinstance(item, dict)
+        ]
+        revision = max(prior_revisions, default=0) + 1
+    state["evaluation_anchor"] = {
+        "revision": revision,
+        **identity,
+        "locked_at": now_iso(),
+        "reason": reason,
+        "legacy_derived": False,
+    }
+    state["paper_ready_assessment"] = None
+    state["seed_selection_risk_acceptance"] = None
+    save_state(path, state)
+    print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
+
+
 def cmd_confirm(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
@@ -2977,11 +3323,13 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         "record_sha256_at_confirmation": digest,
     }
     if args.layer == "compass":
+        invalidate_evaluation_anchor(state, "compass_change", args.id)
         for layer in ("direction", "science", "paper"):
             invalidate_checkpoint(path, state, layer, "compass_change", args.id)
         state["paper_ready_assessment"] = None
         state["phase"] = "exploration"
     elif args.layer == "direction":
+        invalidate_evaluation_anchor(state, "direction_change", args.id)
         for layer in ("science", "paper"):
             invalidate_checkpoint(path, state, layer, "direction_change", args.id)
         state["paper_ready_assessment"] = None
@@ -2990,6 +3338,7 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     elif args.layer == "science":
         invalidate_checkpoint(path, state, "paper", "science_change", args.id)
         state["paper_ready_assessment"] = None
+        state["seed_selection_risk_acceptance"] = None
         state["phase"] = "confirmed_project"
     elif args.layer == "paper":
         state["phase"] = "paper_handoff_approved"
@@ -3006,6 +3355,13 @@ def cmd_phase(args: argparse.Namespace) -> None:
     target = args.set
     assessment_args_present = bool(args.assessment) or any(
         getattr(args, field) is not None for field in PAPER_ASSESSMENT_CLI_FIELDS
+    ) or bool(args.favorable_seed_selection) or any(
+        value is not None
+        for value in (
+            args.seed_risk_decision_id,
+            args.seed_risk_pi_decision,
+            args.seed_risk_pi_outcome,
+        )
     )
     if target != "paper_ready_pending_pi" and assessment_args_present:
         raise SystemExit(
@@ -3033,6 +3389,11 @@ def cmd_phase(args: argparse.Namespace) -> None:
             raise SystemExit("Cannot enter paper-ready phase before complete L1 and L2 checkpoints")
         if not args.assessment:
             raise SystemExit("Entering paper-ready phase requires --assessment")
+        if not evaluation_anchor_usable(state):
+            raise SystemExit(
+                "Entering paper-ready phase requires an evaluation anchor locked "
+                "before broad tuning"
+            )
         missing = [
             field
             for field in PAPER_ASSESSMENT_TEXT_FIELDS
@@ -3051,6 +3412,35 @@ def cmd_phase(args: argparse.Namespace) -> None:
             )
         direction_payload = state["layer_checkpoints"]["direction"]["payload"]
         science_payload = state["layer_checkpoints"]["science"]["payload"]
+        anchor = state["evaluation_anchor"]
+        if (
+            args.primary_metric != anchor["primary_metric"]
+            or args.metric_scale != anchor["metric_scale"]
+        ):
+            raise SystemExit(
+                "Paper-ready metric and scale must match the current evaluation "
+                "anchor. Replace the anchor first; results from the previous anchor "
+                "cannot directly satisfy the paper gate."
+            )
+        risk_source = None
+        if args.favorable_seed_selection:
+            risk_source = seed_selection_risk_decision_source(
+                state,
+                args,
+                state["layer_checkpoints"]["science"].get("id"),
+                anchor["revision"],
+            )
+        elif any(
+            value is not None
+            for value in (
+                args.seed_risk_decision_id,
+                args.seed_risk_pi_decision,
+                args.seed_risk_pi_outcome,
+            )
+        ):
+            raise SystemExit(
+                "Seed-risk decision arguments require --favorable-seed-selection"
+            )
         minimum_gain = direction_payload["evidence_standard"][
             "minimum_paper_gain_points"
         ]
@@ -3076,22 +3466,47 @@ def cmd_phase(args: argparse.Namespace) -> None:
             "core_mechanism": science_payload["core_mechanism"],
             "minimum_paper_gain_points": float(minimum_gain),
             "improvement_points": improvement_points,
+            "evaluation_anchor_revision": anchor["revision"],
+            "metric_direction": anchor["metric_direction"],
+            "favorable_seed_selection": bool(args.favorable_seed_selection),
             **{field: getattr(args, field) for field in PAPER_ASSESSMENT_CLI_FIELDS},
         }
         if not paper_assessment_complete(assessment_payload):
             raise SystemExit("Internal paper-ready assessment validation failed")
         append_paper_assessment_receipt(record, assessment_payload)
+        assessment_payload_sha256 = paper_assessment_payload_sha256(
+            assessment_payload
+        )
         state["paper_ready_assessment"] = {
             "path": stored,
             "sha256_at_gate": sha256_file(record),
-            "payload_sha256_at_gate": paper_assessment_payload_sha256(
-                assessment_payload
-            ),
+            "payload_sha256_at_gate": assessment_payload_sha256,
             "recorded_at": now_iso(),
             **assessment_payload,
         }
+        if risk_source is not None:
+            state["seed_selection_risk_acceptance"] = {
+                "accepted": True,
+                "science_id": state["layer_checkpoints"]["science"].get("id"),
+                "evaluation_anchor_revision": anchor["revision"],
+                "decision_source": risk_source,
+                "accepted_at": now_iso(),
+                "assessment_payload_sha256": assessment_payload_sha256,
+            }
+            consume_question(
+                state,
+                args.seed_risk_decision_id,
+                {
+                    "type": "seed_selection_risk",
+                    "science_id": state["layer_checkpoints"]["science"].get("id"),
+                    "evaluation_anchor_revision": anchor["revision"],
+                },
+            )
+        else:
+            state["seed_selection_risk_acceptance"] = None
     if current == "paper_ready_pending_pi" and target == "confirmed_project":
         state["paper_ready_assessment"] = None
+        state["seed_selection_risk_acceptance"] = None
     state["phase"] = target
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
@@ -3446,6 +3861,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Why task, data/split, labels, inference information, metric, and evaluation match",
     )
     phase_parser.add_argument(
+        "--evaluation-anchor-evidence",
+        help="Evidence that the scored result was produced or reassessed under the current metric anchor",
+    )
+    phase_parser.add_argument(
+        "--stability-evidence",
+        help="Project-appropriate repeat, uncertainty, or stability evidence; no universal seed count is imposed",
+    )
+    phase_parser.add_argument(
         "--primary-metric", help="Higher-is-better primary metric used for the hard gate"
     )
     phase_parser.add_argument(
@@ -3459,7 +3882,44 @@ def build_parser() -> argparse.ArgumentParser:
     phase_parser.add_argument(
         "--our-score", type=float, help="Our score on the same primary metric and protocol"
     )
+    phase_parser.add_argument(
+        "--favorable-seed-selection",
+        action="store_true",
+        help="Declare use of favorably selected seeds; requires a scoped PI risk acceptance",
+    )
+    seed_risk_source = phase_parser.add_mutually_exclusive_group()
+    seed_risk_source.add_argument("--seed-risk-decision-id")
+    seed_risk_source.add_argument(
+        "--seed-risk-pi-decision",
+        help="Concise direct PI acceptance; detailed disclosure stays in the user conversation",
+    )
+    phase_parser.add_argument(
+        "--seed-risk-pi-outcome", choices=sorted(APPROVING_OUTCOMES)
+    )
     phase_parser.set_defaults(func=cmd_phase)
+
+    evaluation_parser = subparsers.add_parser(
+        "evaluation-anchor",
+        help="Lock or replace the agent-owned primary metric before broad tuning",
+    )
+    evaluation_parser.add_argument("state")
+    evaluation_parser.add_argument("--primary-metric", required=True)
+    evaluation_parser.add_argument(
+        "--metric-scale",
+        required=True,
+        choices=("unit_interval", "percentage"),
+    )
+    evaluation_parser.add_argument(
+        "--metric-direction",
+        required=True,
+        choices=sorted(METRIC_DIRECTIONS),
+    )
+    evaluation_parser.add_argument(
+        "--reason",
+        required=True,
+        help="Why this metric definition is appropriate before broad tuning",
+    )
+    evaluation_parser.set_defaults(func=cmd_evaluation_anchor)
 
     confirm_parser = subparsers.add_parser(
         "confirm", help="Record a typed user-confirmed checkpoint"
@@ -3484,11 +3944,14 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_parser.add_argument("--competitive-bar")
     confirm_parser.add_argument("--novelty-sufficiency")
     confirm_parser.add_argument("--generalization-requirement")
-    confirm_parser.add_argument("--paper-ready-threshold")
+    confirm_parser.add_argument(
+        "--paper-ready-threshold",
+        help="Additional paper-ready requirements; cannot lower the numeric gain floor",
+    )
     confirm_parser.add_argument(
         "--minimum-paper-gain-points",
         type=float,
-        help="Project paper-ready gain floor in percentage points; defaults to 1 and cannot be lower",
+        help="Numeric project paper-ready gain floor in percentage points; defaults to 1 and cannot be lower",
     )
     confirm_parser.add_argument("--direction-id")
     confirm_parser.add_argument("--problem")

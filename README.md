@@ -16,7 +16,8 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 - keeps informational replies active, while deferred decisions move to a visible queue with a required revisit condition and do not count toward the five-question pause;
 - requires a dataset-origin reference, a recent top-conference comparable method, another published mechanism, and a strong simple baseline before paper-level claims;
 - separates external baselines, the proposed method, and internal variants instead of treating “ours versus ours” as competitiveness evidence;
-- permits a paper-decision question only after the higher-is-better primary metric beats the strongest recent top-conference protocol-matched baseline by at least 1 percentage point (`0.01` on a `0–1` scale or `1.0` on a `0–100` scale), then generates a complete decision report before asking the user;
+- locks the primary metric, scale, and direction before broad tuning, while allowing an agent-owned replacement to invalidate older paper-gate evidence prospectively;
+- permits a paper-decision question only after the higher-is-better primary metric beats the strongest recent top-conference protocol-matched baseline by at least 1 percentage point (`0.01` on a `0–1` scale or `1.0` on a `0–100` scale), includes project-appropriate stability evidence, and then generates a complete decision report before asking the user;
 - avoids engineering-heavy module stacks without a coherent mechanism;
 - uses existing GPU compute by default and never rents paid compute without approval;
 - tunes only candidates with credible potential and reports their observed ceiling plainly;
@@ -34,7 +35,12 @@ The skill keeps scientific ownership with the user. It distinguishes ordinary au
 - audits legacy state instead of silently treating older unstructured approvals as complete;
 - hands a user-approved research package to a separate submission workflow instead of mixing exploration with drafting and review.
 
-The skill intentionally does not impose universal test-set, sealed-set, external-label, metric-selection, validation, or second-dataset protocols. It does impose the paper-decision gain floor above once a higher-is-better primary metric and matched protocol are selected. It also requires an unexposed-dataset search during L1 scouting; the user decides whether any candidate becomes part of the evidence standard.
+The skill intentionally does not impose universal test-set, sealed-set,
+external-label, aggregation, seed-count, significance-test, validation, or
+second-dataset protocols. It does impose the paper-decision gain floor above
+once a higher-is-better primary metric and matched protocol are selected. It
+also requires an unexposed-dataset search during L1 scouting; the user decides
+whether any candidate becomes part of the evidence standard.
 
 ## Install
 
@@ -71,7 +77,7 @@ For long-running work, the skill can maintain:
 <project>/.codex/research/L3/D001.md  # optional agent/project-managed index
 ```
 
-The schema-v9 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, legal phases, structured paper-ready assessment and gain arithmetic, recent notifications, resumable active jobs, pause state, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. It can prune audit scopes for deleted directories while requiring PI approval to remove coverage from a directory that still exists. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. Compass or direction changes also mark invalidated L1/L2 current-state blocks visibly stale. L2 confirmation records the L1 evidence standard plus resolvable nearest-work, external-baseline, and result references. The paper gate generates and content-locks a readable decision report before the user's paper decision. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
+The schema-v10 controller tracks versioned PI decision targets, active and deferred question queues, research-compass/L1/L2/paper checkpoints, the revisioned evaluation anchor, legal phases, structured paper-ready assessment and gain arithmetic, recent notifications, resumable active jobs, pause state, additional frozen-field history, and bounded multi-scope project-instruction maintenance receipts. It can prune audit scopes for deleted directories while requiring PI approval to remove coverage from a directory that still exists. `init` creates the L1/L2 scaffold, and each confirmation refreshes its marked current-state block before appending a structured decision receipt. Compass or direction changes also mark invalidated L1/L2 current-state blocks visibly stale. L2 confirmation records the L1 evidence standard plus resolvable nearest-work, external-baseline, and result references. The paper gate requires current-anchor and project-appropriate stability evidence, then generates and content-locks a readable decision report before the user's paper decision. Checkpoint and assessment records are project-local; external evidence references are read-only. L1 and L2 retain the scientific state and user decisions. L3 may point to native experiment tracking, be compacted, or be omitted when it adds no value; active L2 claims must still identify adequate supporting evidence. Project instructions keep stable rules and pointers only; their contents are not copied into controller state.
 
 Existing projects may retain `.codex/research-ledger.md` as read-only history and create the layered files at the next material checkpoint.
 
@@ -80,7 +86,7 @@ Existing projects may retain `.codex/research-ledger.md` as read-only history an
 - `SKILL.md` is the entry point, authority boundary, and shortest end-to-end flow.
 - `references/workflow.md` is the canonical phase and gate specification.
 - `references/exploration-policy.md` defines task–dataset, literature, baseline, method, and ceiling-search judgment.
-- `references/collaboration-policy.md` defines notifications, PI questions, the 20-minute batch rule, and the five-question pause.
+- `references/collaboration-policy.md` defines notifications, PI questions, state-aware unattended monitoring, the 20-minute batch rule, and the five-question pause.
 - `references/research-state.md` defines the L1/L2 durable record and discretionary L3 layer.
 - `references/agents-maintenance.md` defines bounded `AGENTS.md` content, precedence-aware audits, change classes, and how instruction decisions reuse the existing queue.
 - `scripts/research_queue.py` initializes and control-audits state, enforces scoped typed checkpoints and legal transitions, records resumable active jobs, and audits/records project-instruction maintenance; it checks provenance and artifact availability, not scientific or semantic adequacy, and it does not grant authority, rewrite instructions, wake itself, or run experiments.
@@ -105,14 +111,19 @@ python scripts/research_queue.py answer STATE --id Q001 --decision "..." --outco
 python scripts/research_queue.py answer STATE --id Q002 --decision "稍后决定" --outcome defer --revisit-condition "外部 baseline 复现完成"
 python scripts/research_queue.py reopen STATE --id Q002 --reason "外部 baseline 复现已完成"
 python scripts/research_queue.py confirm STATE --layer direction --id D001 --record L1_FILE --decision-id Q001 --task-type "..." --dataset "..." --unexposed-dataset-search "..." --competitive-bar "..." --novelty-sufficiency "..." --generalization-requirement "..." --paper-ready-threshold "..." --minimum-paper-gain-points 1
+python scripts/research_queue.py evaluation-anchor STATE --primary-metric "..." --metric-scale unit_interval --metric-direction higher_is_better --reason "..."
 python scripts/research_queue.py confirm STATE --layer science --id S001 --record L2_FILE --pi-decision "把这个作为主线" --pi-outcome approve --direction-id D001 --problem "..." --core-mechanism "..." --innovation-claim "..." --external-baseline-status "..." --ceiling-summary "..." --nearest-work-record L2_FILE --baseline-record L2_FILE --result-record L2_FILE
-python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --recent-top-conference-baseline "..." --baseline-venue-year "SIGIR 2025" --baseline-search-scope "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28" --baseline-source "..." --protocol-match-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
+python scripts/research_queue.py phase STATE --set paper_ready_pending_pi --assessment ASSESSMENT_FILE --competitive-bar-assessment "..." --novelty-assessment "..." --generalization-assessment "..." --paper-ready-threshold-assessment "..." --narrowest-supported-claim "..." --strongest-matched-comparison "..." --remaining-objection "..." --necessary-work "..." --optional-work "..." --specific-method "..." --final-results "..." --recent-top-conference-baseline "..." --baseline-venue-year "SIGIR 2025" --baseline-search-scope "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28" --baseline-source "..." --protocol-match-evidence "..." --evaluation-anchor-evidence "..." --stability-evidence "..." --primary-metric "..." --metric-scale unit_interval --baseline-score 0.80 --our-score 0.81
 python scripts/research_queue.py confirm STATE --layer paper --id P001 --record ASSESSMENT_FILE --decision-id Q003 --science-id S001 --headline-claim "..." --handoff-target "paper-submission-orchestrator"
 python scripts/research_queue.py job-add STATE --id J001 --description "..." --command "..." --status running --next-action "..."
 python scripts/research_queue.py status STATE
 ```
 
-The controller cannot keep a Codex task alive by itself. Use the host task or automation mechanism for unattended wakeups; the job registry makes the work recoverable when a task resumes.
+The controller cannot keep a Codex task alive by itself. When unattended
+monitoring is explicitly requested, use the host scheduled-task mechanism as a
+compact state-aware wakeup at the next meaningful time, and stop future wakeups
+at workflow stop conditions. If scheduling is unavailable, the job registry
+makes the work recoverable when a task resumes.
 
 ## Validation
 

@@ -100,7 +100,7 @@ Prepare an L1 decision packet containing:
    - novelty sufficiency standard;
    - whether generalization, a second dataset, or another evidence axis is
      required;
-   - what result would justify considering paper writing;
+   - what additional result conditions would justify considering paper writing;
 5. unresolved risks and what can continue while the user decides.
 
 Gate `G1 L1_CONFIRMED`:
@@ -112,11 +112,13 @@ Gate `G1 L1_CONFIRMED`:
 - the decision outcome is `select` or `approve`, not merely “answered”;
 - a queued approval is scoped to this direction ID and consumed only here;
 - the structured checkpoint contains task, dataset, competitive bar, novelty
-  sufficiency, generalization requirement, paper-ready threshold, and the
-  unexposed-dataset search result;
+  sufficiency, generalization requirement, additional paper-ready requirements,
+  and the unexposed-dataset search result;
 - the numeric paper-gain floor is at least 1 percentage point over the strongest
   recent top-conference protocol-matched baseline; a project may raise but not
   lower it;
+- descriptive paper-ready requirements may add conditions but cannot redefine
+  or lower the numeric floor;
 - no unresolved contradiction exists with another user-frozen field.
 
 Only then enter `confirmed_project`. Replacing the task, dataset, or adopted
@@ -139,6 +141,13 @@ The baseline roster must be identified and source-checked before broad tuning.
 The full matched local reproduction need not be complete at that moment. A
 `BLOCKED` or `BASELINE_INCOMPLETE` key comparison may coexist with L2 method
 work, but it cannot support a paper-worthy judgment or pass G3.
+
+Before broad tuning, use `evaluation-anchor` to lock the agent-selected primary
+metric, its `0–1` or `0–100` scale, and higher-is-better direction. This does not
+create a PI question and does not impose a universal aggregation rule. Replacing
+the anchor is autonomous, but results tied only to the previous revision cannot
+directly pass G3; the report must identify evidence produced or explicitly
+reassessed under the current revision.
 
 Prepare an L2 decision packet containing:
 
@@ -187,6 +196,8 @@ longer sensible, present a proposed L1 change for user decision.
 Gate `G3 PAPER_DECISION_READY`:
 
 - G1 and G2 remain valid;
+- a current evaluation anchor is tied to the active L1 direction and the scored
+  result is tied to that anchor revision;
 - a primary source identifies the strongest recent top-conference baseline found
   for the same protocol, and the report explains the task, dataset/split, labels,
   supervision/inference information, metric, and evaluation match;
@@ -197,16 +208,26 @@ Gate `G3 PAPER_DECISION_READY`:
 - the strongest protocol-matched external comparison is explicit;
 - the remaining reviewer-level objection is explicit;
 - necessary and optional additional work are separated;
+- project-appropriate repeat, uncertainty, or stability evidence is explicit,
+  without a universal seed count or significance test;
 - the package is assessed against every recorded L1 evidence criterion.
+
+If the headline result uses `n` favorable seeds selected from a larger pool,
+the agent must show the total pool, selection rule, and scientific risk only in
+the user decision conversation and obtain a scoped PI acceptance before G3.
+Do not copy that detailed disclosure into project or manuscript documents. The
+controller retains only the minimal acceptance receipt and its link to the
+assessment.
 
 Before asking the user, generate a readable project-local paper-decision report
 covering the current task, dataset, problem in current/nearest work, innovation, concrete
 method, final results, baseline identity/venue/year/source and search scope,
-protocol-match evidence, metric scale, baseline score, our score, computed point gain, required floor,
-and the remaining G3 assessments. Only after that report exists may the workflow
-enter `paper_ready_pending_pi` and ask whether to start paper writing and what
-headline claim to use. This is a real user decision even when the agent strongly
-recommends proceeding.
+protocol-match evidence, the metric anchor and current-revision evidence,
+metric scale, baseline score, our score, computed point gain, required floor,
+stability evidence, and the remaining G3 assessments. Only after that report
+exists may the workflow enter `paper_ready_pending_pi` and ask whether to start
+paper writing and what headline claim to use. This is a real user decision even
+when the agent strongly recommends proceeding.
 
 The transition into `paper_ready_pending_pi` requires that project-local durable
 report and a structured receipt covering its scientific and numeric fields. The
@@ -267,6 +288,30 @@ Update it to `completed`, `failed`, `blocked`, or `cancelled` when appropriate,
 then remove the record when it no longer helps recovery. This is a live L3
 index, not a mandatory run archive. The controller records resumability; it does
 not schedule, poll, or terminate the process by itself.
+
+### Unattended scheduled wakeups
+
+Create or update a host scheduled task only when the user explicitly requests
+unattended monitoring and the host exposes that capability. Treat it as a
+state-aware wakeup, not a fixed 20-minute research loop:
+
+1. set the next check from the job's expected completion or another meaningful
+   state boundary; use the 20-minute mark only when an unanswered question
+   leaves other authorized work to resume;
+2. read the compact controller state and job/result fingerprint before loading
+   literature or performing scientific reasoning;
+3. when nothing changed, update the next meaningful check and exit without a
+   narrative report;
+4. when a result changed, analyze it, update the scientific state, and launch at
+   most one next experiment batch before returning control;
+5. schedule no next wakeup when the user stopped, `PAUSED_FOR_PI` is active,
+   L1/L2 is invalid, the next action needs a macro decision or paid compute, no
+   authorized work remains, or G3 is reached.
+
+A failed experiment alone is not a stop condition when another authorized,
+promising action remains. If scheduled tasks are unavailable, preserve the job
+ID, command/session, fingerprint, next check, and next action so a later Codex
+task can resume without replaying the full chat.
 
 ## Control audit
 

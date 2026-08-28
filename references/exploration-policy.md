@@ -65,7 +65,15 @@ search boundary and blocker. The search is mandatory; using the candidate as a
 second dataset, generalization test, or paper requirement is an L1 decision.
 Do not invent a universal sealed-set, external-label, or evaluation protocol.
 
-Keep a small ranked L1 shortlist rather than silently choosing one pair. Once meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and cost are known well enough to compare the candidates, ask the user to select the active task-dataset direction and project evidence standard. The standard covers the competitive target, novelty sufficiency, generalization or second-dataset expectation, and paper-decision threshold. Cheap inspection and feasibility work may precede this choice; sustained method search and broad tuning may not.
+Keep a small ranked L1 shortlist rather than silently choosing one pair. Once
+meaning, fit, headroom, nearest-work risk, external-baseline feasibility, and
+cost are known well enough to compare the candidates, ask the user to select
+the active task-dataset direction and project evidence standard. The standard
+covers the competitive target, novelty sufficiency, generalization or
+second-dataset expectation, and any additional project-specific paper-ready
+requirements. Those requirements may tighten but never lower the canonical
+numeric paper floor. Cheap inspection and feasibility work may precede this
+choice; sustained method search and broad tuning may not.
 
 ## Prefer useful headroom over saturated benchmarks
 
@@ -154,6 +162,13 @@ Do not choose mathematics merely because it looks novel. If the intuition cannot
 
 Do not give every candidate a full tuning budget. First decide whether the method has enough potential to justify a ceiling search. Before closing a method as low-potential, verify that the implementation runs as intended, the comparison baseline is healthy, and at least one diagnostic capable of detecting the proposed mechanism was inspected. A weak first configuration alone is not enough to reject the idea.
 
+Before broad tuning begins, lock the primary metric, its `0–1` or `0–100`
+scale, and higher-is-better direction in the evaluation anchor. The agent owns
+this technical choice, so it creates no PI question and imposes no universal
+aggregation rule. If the anchor later changes, results tied only to its previous
+revision remain exploratory until they are rerun or explicitly reassessed under
+the new anchor.
+
 Treat a candidate as promising when most of the following hold:
 
 - its mechanism directly addresses the observed problem;
@@ -162,9 +177,25 @@ Treat a candidate as promising when most of the following hold:
 - there is a plausible path from the current result to a competitive result;
 - the expected scientific value justifies the remaining compute and time.
 
-In addition, the baseline roster must exist and expose a plausible route to competitiveness. A candidate can remain in `METHOD_CHEAP_SCREEN` while external baselines are being verified, but it cannot be called paper-worthy from internal comparisons alone. “Paper-worthy” requires a verified strongest recent top-conference protocol-matched baseline and at least a 1-percentage-point gain on the higher-is-better primary metric. Compute that as `(ours - baseline) * 100` for a `0–1` metric or `ours - baseline` for a `0–100` metric. A project may adopt a stricter L1 floor, never a lower one.
+In addition, the baseline roster must exist and expose a plausible route to
+competitiveness. A candidate can remain in `METHOD_CHEAP_SCREEN` while external
+baselines are being verified, but it cannot be called paper-worthy from
+internal comparisons alone. Apply the canonical G3 numeric floor and
+protocol-matched comparison in [workflow.md](workflow.md); project-specific L1
+requirements may be stricter but cannot lower that floor.
 
-For a promising candidate, choose a project-appropriate ceiling-search budget based on the venue timeline, available compute, and the number of viable alternatives. Tune hyperparameters and other permitted implementation choices using available compute, including an existing GPU by default. Continue until results saturate, gains show clear diminishing returns, the budget is reached, or the candidate loses its promise. The resulting "ceiling" is the best observed development-side result under the current project contract, not a universal upper bound or proof of generalization. Report the decision-relevant summary; do not require an archive of every attempt or the stopping rule.
+For a promising candidate, choose a project-appropriate ceiling-search budget
+based on the venue timeline, available compute, and the number of viable
+alternatives. Tune hyperparameters and other permitted implementation choices
+using available compute, including an existing GPU by default. Continue until
+results saturate, gains show clear diminishing returns, the budget is reached,
+or the candidate loses its promise. Gather repeat, uncertainty, or stability
+evidence appropriate to this project when the method approaches the paper gate;
+do not impose one seed count, aggregation method, or significance test on every
+project. The resulting "ceiling" is the best observed development-side result
+under the current project contract, not a universal upper bound or proof of
+generalization. Report the decision-relevant summary; do not require an archive
+of every attempt or the stopping rule.
 
 After the ceiling report and external comparison exist, ask the user whether this problem + core mechanism + innovation claim should become the active L2 scientific story. The tuning itself does not silently make that decision.
 
@@ -173,7 +204,7 @@ Report a ceiling search to the user in plain language with:
 1. the problem and method being tested;
 2. why the method looked promising;
 3. what was tuned;
-4. the starting result and best result;
+4. the locked metric and the starting and best results under its current revision;
 5. the gap to the strongest relevant baseline;
 6. stability, failure cases, and remaining weaknesses;
 7. compute cost, estimated ceiling, and whether the evidence now looks paper-worthy.
