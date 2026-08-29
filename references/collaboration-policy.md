@@ -11,8 +11,8 @@ The user makes these decisions:
 
 - confirm or change the research compass: venue/submission window and domain;
 - select or change the L1 task-dataset direction and project evidence standard;
-- promote or replace the confirmed L2 problem, method cluster, core mechanism,
-  and innovation claim;
+- promote or replace the confirmed L2 problem path, active leaf, method cluster,
+  core mechanism, and innovation claim;
 - change another field explicitly frozen by the user;
 - approve paid compute or rental;
 - accept the project-specific risk of reporting favorably selected seeds;
@@ -23,17 +23,49 @@ The user makes these decisions:
 - authorize submission, publication, or an external send.
 
 Everything else is normally autonomous inside the confirmed project scope.
-Before broad tuning, the agent locks the primary metric, its scale, and
-directionality. Setting or replacing that evaluation anchor does not need
+Before broad tuning, the agent locks the active problem path, leaf, method
+cluster, falsifiable prediction, primary metric, scale, and directionality.
+Setting or replacing that evaluation anchor does not need
 approval, nor do aggregation details, hyperparameters, routine debugging, clear
 failures, or individual pre-G2 method clusters. A replacement anchor applies
 prospectively: evidence tied only to an older anchor cannot pass the paper gate.
-Before G2, the agent may switch among paper-grade exploratory problems and
+After G2, an autonomous exploratory anchor change does not alter the confirmed
+L2 story; it makes the mismatch visible and blocks G3 until the user approves a
+matching L2 replacement.
+Before G2, the agent may switch among paper-grade exploratory paths, leaves, and
 method clusters inside confirmed L1, but must notify every switch in plain
-language. After G2, replacing the confirmed problem, method cluster, core
-mechanism, or innovation claim remains a scoped PI decision. Engineering
+language. After G2, replacing the confirmed path, leaf, method cluster, core
+mechanism, prediction, or innovation claim remains a scoped PI decision. Engineering
 problems are solved autonomously in L3 and become a notification only when they
 change scientific meaning.
+
+## Macro-only user supervision surface
+
+The user receives, discusses, supervises, and decides macro research state:
+the compass, L1 task/dataset direction, L2 problem path/active leaf and method
+cluster, innovation and falsifiable claim, dataset-specific external baseline,
+representative result and gap, evidence sufficiency, resource authorization,
+and paper or external-action gates.
+
+L3 is an internal agent execution surface. Do not put commands, sessions,
+process state, raw errors, stack traces, debugging, hyperparameter trials,
+individual seeds, routine model configuration, data plumbing, or engineering
+repair detail into user progress reports, notifications, alignment discussions,
+or PI questions. Keep those details in native logs, the optional L3 index, or
+the job registry when they help execution and recovery.
+
+When L3 changes scientific meaning, translate the consequence upward and report
+only that consequence. Examples include: an earlier result no longer supports
+method cluster M003; the external-baseline gap must be remeasured; the current
+branch has no interpretable evidence yet; or a model-family change alters the
+mechanism or comparison boundary. Do not explain the underlying stack trace,
+memory issue, script repair, or command, including when a project-level prompt
+asks for those details. This is the Skill's global supervision boundary, not a
+per-project preference. Changing it requires a separately reviewed Skill
+change; it cannot be bypassed by an ad hoc progress or debugging request.
+Hiding L3 detail never hides a macro authorization matter: paid compute,
+permissions, sensitive data, destructive actions, and external sends retain
+their existing user gates.
 
 Direct user decisions must be captured in the state file even if no queued
 question preceded them. If an existing project is still doing active method
@@ -72,7 +104,7 @@ Notifications do not count toward the five-question cap. Notify material events
 such as:
 
 - the candidate pool materially narrowed;
-- the active exploratory scientific problem changed;
+- the active exploratory problem path or leaf changed;
 - the active method cluster changed;
 - a promising method completed ceiling tuning;
 - evidence changed the project-level interpretation;
@@ -80,7 +112,9 @@ such as:
 - a routine implementation repair changed or invalidated scientific evidence;
 - a mechanical repair or meaning-preserving compaction changed the effective
   project instructions;
-- a long-running job completed or failed.
+- a scientific screen or evidence batch changed the current L1/L2
+  interpretation. A job completion or failure with no such consequence remains
+  internal L3 state.
 
 Use plain language:
 
@@ -91,9 +125,10 @@ Use plain language:
 接下来做什么：
 ```
 
-For a `problem_switch` or `method_cluster_switch`, also record the previous and
-new stable IDs with the controller. The IDs make the change recoverable after a
-restart; the plain-language explanation remains the user-facing notification.
+For a changed leaf (`problem_switch`) or method cluster, also record the previous
+and new stable IDs with the controller. A same-leaf path refinement uses
+`problem_path_change` and a direct explanation rather than fake from/to IDs. The
+plain-language explanation remains the user-facing notification.
 
 Translate metrics into their consequence. Do not send only run names or
 unexplained abbreviations.
@@ -135,9 +170,11 @@ understanding as permission to pass a gate.
 Answer in plain language with:
 
 1. the confirmed compass and L1 direction being served;
-2. the active L2 problem, or the exploratory problem if L2 is not confirmed;
+2. the retained L2 problem path and active leaf, or the exploratory path/leaf if
+   L2 is not confirmed;
 3. the exact hypothesis and predicted observable change of the current run;
-4. why the implementation is the minimum useful test of that hypothesis;
+4. why the current scientific test is the minimum useful test of that
+   hypothesis, without exposing engineering execution detail;
 5. the current evidence, uncertainty, and condition that would stop or redirect
    this branch.
 
@@ -148,6 +185,35 @@ PI question when recovery requires changing confirmed compass, L1, or L2. A
 user correction during this discussion becomes authority only when it clearly
 selects, approves, rejects, or defers a scoped choice; record that decision in
 the normal controller state.
+
+## Current research-window report
+
+Treat “窗口现在什么情况”, “跑到哪了”, “从上次开始发生了什么”, and equivalent
+questions as a request for the macro research delta since the latest explicit
+user instruction to start, continue, run, iterate, or begin monitoring. Run
+`status STATE --window`; the read must not reset the window or acknowledge a
+monitor fingerprint.
+
+Report in this order:
+
+1. the user instruction and time that opened the current window;
+2. L1 task/dataset candidates, selections, replacements, and representative
+   outcomes during the window;
+3. L2 problem paths/active leaves and method clusters tried, retained, closed,
+   or switched, with representative starting/best/latest evidence and the
+   current dataset-specific external-baseline gap or blocker; say plainly what
+   changed in the path or leaf since the window opened;
+4. `current_focus`: the active L1/L2 hypothesis, dataset, latest interpretable
+   result, and next macro research action;
+5. macro notifications, then genuine active or deferred PI decisions.
+
+Keep verified observation, agent interpretation, and PI decision visibly
+separate. Do not include the active-job list, commands, sessions, errors, or an
+L3 summary. When no trustworthy window exists after migration, say so and
+report only the current verified L1/L2 state; never reconstruct a history from
+jobs, logs, notifications, or timestamps. If one user message asks for this
+report and then says to continue, report the existing window first and only
+then start its replacement.
 
 ## Twenty-minute behavior
 
@@ -250,12 +316,13 @@ Within the current project and authorization:
 - identify and verify the external-baseline roster before broad ceiling tuning;
 - ensure that roster has exactly one source-checked row for every adopted
   dataset before locking the evaluation anchor;
-- lock the primary metric, scale, and direction before broad ceiling tuning;
+- lock the problem path, active leaf, method cluster, falsifiable prediction,
+  primary metric, scale, and direction before broad ceiling tuning;
 - tune a promising method to estimate its current-project ceiling;
 - close low-potential methods after implementation, baseline, and diagnostic
   sanity checks;
-- switch to another justified method cluster or paper-grade problem when the
-  current cluster or problem is exhausted, and notify the user;
+- switch to another justified method cluster or paper-grade leaf when the
+  current cluster or leaf is exhausted, and notify the user;
 - notify model-family changes;
 - handle routine metrics, hyperparameters, code details, and ordinary debugging
   autonomously in L3 rather than presenting them as L2 innovations;
@@ -271,7 +338,8 @@ protocol-matched baseline, clear the configured numeric gain floor, establish
 project-appropriate repeat, uncertainty, or stability evidence, and generate
 the project-local paper-decision report. Present:
 
-- the current task, dataset, problem in current/nearest work, innovation, and concrete method;
+- the current task, dataset, compact problem path and active leaf, problem in
+  current/nearest work, innovation, and concrete method;
 - final results plus the baseline venue/year/source and search scope,
   protocol-match evidence, the current evaluation anchor and matching evidence,
   both scores, computed point gain, required floor, and stability evidence;

@@ -21,10 +21,11 @@ user confirms venue/time + domain (+ optional idea)
 -> scout meaningful task-dataset pairs
 -> USER L1: select task + dataset + project evidence standard
 -> map nearest-work problem clusters + adopted-dataset baseline roster
--> maintain paper-grade problem portfolio + problem-linked method clusters
--> agent locks the primary metric, scale, and direction before broad tuning
+-> retain the unresolved problem path to the deepest defensible active leaf
+-> bind paper-grade method clusters to that leaf
+-> agent locks the scientific scope + metric before broad tuning
 -> screen clusters; tune only promising ones; change problem when exhausted
--> USER L2: promote problem + method cluster + core mechanism + innovation
+-> USER L2: promote problem path + active leaf + method cluster + core mechanism + innovation
 -> complete the L1 evidence standard
 -> clear the canonical G3 matched-baseline gain floor
 -> generate the paper-decision report
@@ -44,7 +45,8 @@ The user decides:
 
 - confirmation or change of the venue/submission window and research domain;
 - L1 task-dataset direction and its evidence standard;
-- confirmed L2 problem, method cluster, core mechanism, and innovation claim;
+- confirmed L2 problem path, active leaf, method cluster, core mechanism, and
+  innovation claim;
 - any additional explicitly frozen project choice;
 - semantic changes to stable project instructions;
 - paid compute or rental;
@@ -56,10 +58,12 @@ The user decides:
 The agent may scout candidates, inspect data, reproduce baselines, run cheap
 screens, tune promising methods, repair code, and close low-potential branches
 within the confirmed direction. Metrics, hyperparameters, implementation
-choices, and routine debugging do not need approval. Notify model-family
-changes, every scientific problem or method-cluster switch, and any
-implementation repair that changes scientific meaning. Before L2 confirmation,
-problem/method-cluster switches inside confirmed L1 are notification-only;
+choices, and routine debugging do not need approval and remain internal L3.
+User-facing supervision is macro-only: report model-family changes only when
+they change L2 meaning, every problem-path/active-leaf or method-cluster switch, and
+the L1/L2 consequence—not the engineering details—when a repair changes
+scientific meaning. Before L2 confirmation,
+problem-path/leaf/method-cluster switches inside confirmed L1 are notification-only;
 replacing an already confirmed L2 selection still requires a scoped user
 decision. Resolve engineering problems autonomously in L3.
 
@@ -72,17 +76,26 @@ supersedes every older unconsumed approval.
 - L1 and L2 are durable, selective scientific state. Preserve current facts,
   decision-relevant evidence, user decisions, and material replacements—not
   every attempt.
-- L2 follows nearest-work cluster -> unresolved paper-grade problem ->
-  problem-linked method cluster -> falsifiable prediction -> representative
-  evidence. If credible clusters fail, choose another problem rather than
-  accumulating engineering patches.
-- Expert weighted voting, heuristic fusion, module stacking, threshold tricks,
-  and similar combinations may be L3 tools or baselines, not the L2 problem,
-  core mechanism, or innovation.
+- L1 is the user-confirmed task/dataset scope. L2 retains only the unresolved
+  problem path needed to reach the deepest defensible active leaf; one node is
+  valid, and fixed or irrelevant ancestors must not be fabricated. The method,
+  falsifiable prediction, and innovation attach to that leaf. If its credible
+  clusters fail, activate another justified leaf rather than accumulating
+  engineering patches.
+- Each L2 core candidate explains why an ordinary average, weighted fusion,
+  heuristic ensemble, or module stack cannot solve the active leaf. Such devices
+  may be L3 tools, controls, or baselines; weighting is not rejected when the
+  actual contribution is a new estimand, objective, constraint, mechanism, or
+  theory and the mechanism-sensitive evidence tests that scientific object.
 - L3 is agent/project-managed. Keep or discard logs, failed runs, tuning traces,
   and stop notes according to current utility and project rules. Never delete
   existing artifacts merely because this skill would not have required them.
 - A corrected bug or protocol invalidation must propagate to L2 immediately.
+- L3 never becomes the user's supervision interface. Jobs, commands, sessions,
+  raw errors, debugging, and implementation detail stay internal. If an L3
+  event changes evidence or scientific meaning, expose only its translated
+  L1/L2 consequence. Paid compute, permissions, destructive actions, data
+  safety, and external sends remain macro authorization matters.
 - Compass, L1, L2, and paper fields have one typed source of truth. Use
   `frozen_by_pi` only for additional choices.
 - During L1 scouting, actively search for and report at least one credible
@@ -103,11 +116,13 @@ supersedes every older unconsumed approval.
   exploration; every row must be `MATCHED` and its protocol status must be
   `VERIFIED_MATCH` at G3.
   Never carry one dataset's score or comparator across to another dataset.
-- Before broad tuning, the agent must lock the higher-is-better primary metric,
-  its `0–1` or `0–100` scale, and its direction in the controller. This is an
-  agent-owned protocol anchor, not a new PI question. Replacing it invalidates
-  the previous anchor for the paper gate; earlier results remain exploratory
-  until evidence is produced or explicitly reassessed under the new anchor.
+- Before broad tuning, the agent must lock the ordered problem path, active leaf,
+  method cluster, falsifiable prediction, higher-is-better primary metric, its
+  `0–1` or `0–100` scale, and its direction in the controller. This is an
+  agent-owned scientific-and-metric anchor, not a new PI question. Replacing any
+  anchored field invalidates the previous anchor for the paper gate; earlier
+  results remain exploratory until evidence is produced or explicitly
+  reassessed under the new anchor.
 - Do not impose a universal aggregation rule, seed count, or significance test.
   The paper report must contain project-appropriate repeat, uncertainty, or
   stability evidence.
@@ -147,6 +162,15 @@ fixed task, method, experiment package, and manuscript direction directly to a
 submission workflow. For active method research, initialize the earliest
 missing checkpoint; do not infer it from historical experiments.
 
+For every explicit user instruction to start, continue, run, iterate, or begin
+monitoring, start the replace-on-next-instruction reporting window with
+`window-start` before scientific execution. Initialization directly into
+`exploration` creates the first window. Scheduled wakeups continue the same
+window and never create one. A progress query is read-only and never resets it.
+If one message asks for status and then continuation, report the old window
+first and start the new window second. See the canonical lifecycle in
+[workflow.md](references/workflow.md).
+
 ## PI checkpoints
 
 ### L1 direction
@@ -166,21 +190,25 @@ broad tuning require confirmed L1. Changing L1 requires a new scoped decision.
 
 ### L2 scientific story
 
-Inside L1, cluster current primary literature by the unresolved problem; build a
-small paper-grade problem portfolio; maintain a source-checked external-baseline
-roster for every adopted dataset; and organize solutions as problem-linked
-method clusters with a shared intuition, mathematics, and falsifiable
-prediction. Screen a representative minimal method, tune only promising
-clusters, and move to another problem when credible clusters are exhausted.
-Notify each problem/method-cluster switch with the previous and new stable IDs.
+Inside L1, cluster current primary literature by the unresolved problem and keep
+an ordered active path ending at the deepest defensible paper-grade leaf. Start
+the path at the first unresolved layer; do not restate fixed L1 scope, and allow
+a one-node path. Maintain a source-checked external-baseline roster for every
+adopted dataset and organize solutions as leaf-linked method clusters with a
+shared intuition, mathematics, falsifiable prediction, and simple-combination
+counterfactual. Screen a representative minimal method, tune only promising
+clusters, and move to another leaf when credible clusters are exhausted. Notify
+each problem-path, active-leaf, or method-cluster change in plain language.
 After a ceiling summary and external
-comparison exist, ask whether to promote the problem, method cluster, core
-mechanism, and innovation claim.
+comparison exist, ask whether to promote the problem path, active leaf, method
+cluster, core mechanism, and innovation claim.
 
 Before broad ceiling tuning, record the full adopted-dataset baseline roster,
-then the agent-owned evaluation anchor. Changing
-the metric name, scale, or direction later does not require PI approval, but the
-old anchor's results cannot directly satisfy the paper gate.
+then lock the ordered problem path, active leaf, method cluster, falsifiable
+prediction, primary metric, scale, and direction in the agent-owned evaluation
+anchor. Replacing any anchored scientific or metric field needs no extra PI
+question during exploration, but old-anchor results cannot directly satisfy the
+paper gate. G2 confirmation and G3 evidence must match the current anchor.
 
 L2 must link resolvable problem-portfolio, nearest-work, external-baseline, and
 result evidence. Its baseline record maintains one row per adopted dataset and
@@ -197,7 +225,8 @@ Do not ask for a paper decision unless the primary result clears the configured
 gain floor.
 
 First create a project-local paper-decision report containing the current task,
-dataset, problem in current/nearest work, innovation, concrete method, final
+dataset, compact problem path and active leaf, problem in current/nearest work,
+innovation, concrete method, final
 results, a per-dataset baseline matrix, the primary comparison dataset,
 baseline identity/venue/year/source and literature-search scope,
 protocol-match evidence, the locked metric and scale, evidence tied to the
@@ -274,7 +303,7 @@ state but does not itself schedule or poll.
 
 When the user asks what the agent is doing, challenges the rationale, or wants
 to discuss an in-progress method, run a read-only drift check. Trace the current
-action through compass -> L1 -> L2 -> tested prediction and state what evidence
+action through compass -> L1 -> active L2 problem path/leaf -> tested prediction and state what evidence
 would falsify it. The discussion is not approval. If the trace fails, stop only
 that branch, report the suspected drift plainly, and obtain a scoped L1/L2
 decision before changing the scientific direction.
@@ -296,12 +325,16 @@ judge scientific adequacy or grant permission.
 
 ## Reporting and handoff
 
-Lead with the active L1 direction/evidence standard, active L2
-problem/method-cluster story and external
-comparison, and only the L3 issue that changes their meaning. Separate verified
+For “窗口现在什么情况”, “跑到哪了”, “从上次开始有什么变化”, or an equivalent
+progress request, read `status STATE --window`. Lead with the window boundary,
+then L1 task/dataset changes, L2 problem-path/active-leaf and method-cluster attempts and their
+representative external-baseline gaps, the current macro focus and next action,
+and finally notifications and real PI questions. Do not expose L3 jobs,
+commands, sessions, bugs, raw errors, or engineering summaries. Translate any
+scientifically material L3 event into its L1/L2 consequence. Separate verified
 facts, agent interpretation, notifications, PI questions, and confirmed user
-decisions. Explain changes as: intended action, actual result, why it matters,
-and next action.
+decisions. The canonical user-facing boundary and report semantics are in
+[collaboration-policy.md](references/collaboration-policy.md).
 
 This skill ends at the user-approved paper handoff. Story locking, drafting,
 review, revision, compilation, venue QA, and submission belong downstream, such

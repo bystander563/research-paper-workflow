@@ -4,7 +4,9 @@ Read this reference for research spanning multiple runs, monitoring cycles, or
 context compactions. It defines the durable scientific state, not a chronological
 ledger of all activity. `research_queue.py` separately records typed PI
 questions, structured checkpoints, phase state, resumable active jobs, and a
-bounded project-instruction maintenance receipt.
+bounded project-instruction maintenance receipt. Schema v15 also carries one
+replace-on-next-instruction macro reporting window and binds experiments to the
+active L2 problem path.
 
 ## Retention contract
 
@@ -20,6 +22,54 @@ bounded project-instruction maintenance receipt.
   or invalidated. Link integrity matters; exhaustive archival does not.
 - This policy does not authorize deletion of existing project artifacts merely
   because the skill would not have required creating them.
+
+## Current research window: non-authoritative reporting cache
+
+`research_window` answers one user question: what changed at L1/L2 since the
+latest explicit request to run research? It is an overlay, not L4, not a full
+ledger, and not evidence or approval for a scientific gate. Starting the next
+window replaces its cards without archiving the previous window.
+
+The state contains:
+
+```text
+sequence, id, status, started_at, instruction, start_snapshot, revision
+cards[]
+current_focus
+```
+
+`start_snapshot` contains only the phase, checkpoint IDs/statuses,
+baseline-roster revision/hash, and evaluation-anchor revision. It does not copy
+L1/L2 payloads. Cards are keyed by `(layer, kind, subject_id)` and updated in
+place. Allowed identities are:
+
+- `L1 / task_dataset`;
+- `L2 / problem`;
+- `L2 / method_cluster`;
+- `L2 / baseline_comparison` for one adopted dataset.
+
+Each card separates verified observation from agent interpretation and records
+status, representative starting/best/latest results when available, the current
+dataset-specific external-baseline gap or blocker, disposition reason when
+useful, and the next macro action. It must not create one card per run, variant,
+hyperparameter, seed, bug, or stopping rule. `current_focus` references an
+existing non-terminal card and gives the active hypothesis, current macro test,
+latest interpretable result, and next macro action.
+An `L2 / problem` card may additionally carry the ordered unresolved
+`problem_path`; it must end at that card's `subject_id`. This is a projection of
+L2, never a second authoritative problem tree.
+
+L3 is never copied into this cache. The controller rejects L3 cards. Jobs,
+commands, sessions, raw errors, debugging, and engineering repairs stay in the
+job registry, native logs, or optional L3 index. If they change scientific
+meaning, update the affected L1/L2 card with only the consequence, such as an
+invalidated result or a baseline gap that must be remeasured.
+
+The window cannot confirm or replace compass, L1, L2, paper, baseline-roster,
+evaluation-anchor, evidence-record, or PI-decision state. Its revision enters
+the semantic monitoring fingerprint so a scheduled wakeup can detect new macro
+evidence, while compact status exposes only the window ID/revision, not card
+text. `status --window` is read-only and omits active jobs and all L3 detail.
 
 ## Preferred project layout
 
@@ -86,7 +136,7 @@ they are not L1, L2, L3, or a replacement for the controller. They may tell an
 agent which active L1/L2 files or project truth sources to read, but must not
 copy their changing contents.
 
-The schema-v13 controller stores one project-local instruction-chain snapshot per
+The schema-v15 controller stores one project-local instruction-chain snapshot per
 audited working-directory scope plus a bounded set of update receipts containing
 paths, hashes, sizes, change classes, canonical compaction sources, reasons, and
 decision provenance. Scope-removal receipts are bounded separately; a missing
@@ -152,7 +202,7 @@ The L1 decision packet states, in plain language:
 Record the exact PI instruction in the controller decision receipt. Code or early results
 do not imply selection.
 
-The schema-v13 L1 checkpoint separately stores the selected task type, dataset,
+The schema-v15 L1 checkpoint separately stores the selected task type, dataset,
 explicit adopted-dataset inventory,
 mandatory unexposed-dataset search result, four descriptive evidence-standard
 fields plus the numeric paper-gain floor,
@@ -225,8 +275,9 @@ comparator or evidence changes. Each revision invalidates a pending paper packet
 but not routine L2 implementation work.
 
 Only after the roster exactly covers the adopted datasets, and before broad
-tuning, the controller stores an agent-owned evaluation anchor
-containing the active direction ID, primary metric, `0–1` or `0–100` scale,
+tuning, the controller stores an agent-owned evaluation anchor containing the
+active direction ID, ordered problem path, active leaf ID, method-cluster ID,
+falsifiable prediction, primary metric, `0–1` or `0–100` scale,
 higher-is-better directionality, revision, reason, and lock time. It deliberately
 does not define a universal aggregation rule. Setting or replacing this anchor
 does not require a PI decision.
@@ -266,43 +317,49 @@ presented for L2 confirmation, affects the active scientific interpretation, or
 receives a user decision, retain its compact conclusion even if implementation
 attempts are later discarded.
 
-### Paper-grade problem portfolio
+### Active problem path and alternatives
 
-Group nearest work into clusters that share a scientific problem, then maintain:
+Group nearest work into clusters that share a scientific problem. L1 already
+owns the task/dataset scope; L2 starts at the first unresolved layer and retains
+the ordered path to the deepest defensible active leaf. A one-node path is valid
+and fixed or irrelevant ancestors are not fabricated. Maintain:
 
 ```text
-problem ID | status | nearest-work cluster | shared unresolved problem | scientific value | failure evidence | paper-grade rationale | next action
+path position | problem ID | parent problem ID | status | nearest-work cluster | unresolved problem | scientific value | failure evidence | paper-grade rationale | next action
 ```
 
 Useful statuses include `SCOUTING`, `ACTIVE_SCREEN`, `PROMISING`, `EXHAUSTED`,
-`CLOSED`, and `CONFIRMED_BY_PI`. Retain only problems that are credible
-alternatives, determine the next choice, or received a user decision. An L2
-problem must concern knowledge, capability, estimand, mechanism, diagnosis, or
-another paper contribution. Runtime, data plumbing, memory use, ordinary bugs,
-hyperparameters, and implementation inconvenience belong to L3.
+`CLOSED`, and `CONFIRMED_BY_PI`. Retain the active path plus only alternatives
+that determine the next choice or received a user decision. The active leaf must
+concern knowledge, capability, estimand, mechanism, diagnosis, or another paper
+contribution. Runtime, data plumbing, memory use, ordinary bugs, hyperparameters,
+and implementation inconvenience belong to L3.
 
 ### Problem-linked method clusters
 
-For each active problem, group methods by shared solution intuition and
+For the active leaf, group methods by shared solution intuition and
 mathematical mechanism:
 
 ```text
-problem ID | method-cluster ID | status | shared intuition | mathematical mechanism | falsifiable prediction | representative evidence | external-baseline gap | next action
+active leaf problem ID | method-cluster ID | status | shared intuition | mathematical mechanism | simple-combination counterfactual | falsifiable prediction | representative evidence | external-baseline gap | next action
 ```
 
 Useful statuses include `HYPOTHESIS`, `CHEAP_SCREEN`, `PROMISING`,
 `CEILING_SEARCH`, `EXHAUSTED`, and `CONFIRMED_BY_PI`. A hyperparameter,
 backbone, code path, or extra module does not create a new cluster unless the
-scientific mechanism or falsifiable prediction changes. Expert weighted voting,
-heuristic fusion, module stacking, threshold tuning, and similar combinations
-may be baselines or L3 tools, not the L2 core contribution.
+scientific mechanism or falsifiable prediction changes. Every core candidate
+states what an ordinary average, weighted fusion, heuristic ensemble, or module
+stack cannot capture about the leaf. Those combinations may be baselines or L3
+tools; weighting remains eligible only when the contribution is a distinct
+estimand, objective, constraint, mechanism, or theory rather than fusion itself.
 
 When a cluster is exhausted, keep its compact representative conclusion only if
 it affects the next scientific choice. Try another justified cluster for the
-same problem, or mark the problem exhausted and activate another portfolio
-problem. Record every problem/method-cluster switch as a plain-language
-notification with the previous and new stable IDs; replacing an already
-confirmed L2 selection also needs scoped PI approval.
+same leaf, or mark it exhausted and activate another justified leaf. Record every
+problem-path, leaf, or method-cluster switch in plain language. Stable previous
+and new IDs are required when identity changes; a same-leaf path refinement is
+described directly. Replacing an already confirmed L2 selection also needs
+scoped PI approval.
 
 ### Problem-to-method chain
 
@@ -412,7 +469,7 @@ the external-baseline gate or support a competitive claim.
 Maintain only a small set of decision-relevant method clusters:
 
 ```text
-problem ID | method-cluster ID | status | mechanism | predicted diagnostic | representative cheap-screen evidence | external-baseline gap | best result | next action
+active leaf problem ID | method-cluster ID | status | mechanism | predicted diagnostic | simple-combination counterfactual | representative cheap-screen evidence | external-baseline gap | best result | next action
 ```
 
 For each promising method cluster that receives broad tuning, retain the scientific
@@ -430,13 +487,15 @@ or a recorded stopping rule. Those are L3 details and may be retained or
 discarded at agent discretion.
 
 After the ceiling summary and external comparison exist, create the L2
-scientific-story checkpoint. Ask whether to promote the problem + method cluster
+scientific-story checkpoint. Ask whether to promote the problem path + active
+leaf + method cluster
 + core mechanism + innovation claim, keep it exploratory, or close it. The agent does not promote
 it merely because it is the best internal variant.
 
-The schema-v13 L2 checkpoint stores the active direction ID, problem ID,
-method-cluster ID, problem, nearest-work gap, paper-grade rationale, core
-mechanism, falsifiable prediction, contribution type, innovation claim,
+The schema-v15 L2 checkpoint stores the active direction ID, ordered problem
+path, active leaf ID, method-cluster ID, problem, nearest-work gap, paper-grade
+rationale, core mechanism, simple-combination counterfactual, falsifiable
+prediction, contribution type, innovation claim,
 external-baseline status, ceiling summary,
 approving outcome, durable-record path, and hashed references to the nearest-
 work, problem-portfolio, external-baseline, and result records used for the
@@ -457,7 +516,7 @@ been generated and the configured gain floor passes. The report is a readable
 decision packet, not just a pointer to experiment logs. It must contain:
 
 1. current task, descriptive dataset bundle, and explicit adopted datasets;
-2. problem in current/nearest work plus its problem ID;
+2. compact problem path, active leaf ID, and problem in current/nearest work;
 3. innovation, core mechanism, and method-cluster ID;
 4. concrete method;
 5. final decision-relevant results;
@@ -478,8 +537,8 @@ decision packet, not just a pointer to experiment logs. It must contain:
 13. narrowest supported claim, remaining objection, and necessary versus
     optional work.
 
-The controller copies L1 task/adopted datasets and L2 problem/method-cluster/
-innovation/mechanism into
+The controller copies L1 task/adopted datasets and L2 problem path/active leaf/
+method-cluster/innovation/mechanism into
 the report receipt, checks numeric arithmetic and the floor, ties it to the
 active checkpoint IDs, and content-locks both the file and structured payload.
 A queued paper decision must be created and answered after this receipt; the
@@ -515,7 +574,8 @@ memory/runtime performance, ordinary model configuration, hyperparameters,
 metrics plumbing, and routine bug repair. Do not elevate them into L2 to create
 an innovation story. If a repair changes the sample, label, estimand, model
 family, baseline gap, mechanism conclusion, or another scientific meaning,
-propagate that effect upward and notify the user in plain language.
+propagate that effect upward and notify the user only of the resulting L1/L2
+consequence, not the L3 repair.
 
 Long-running jobs that must survive context compaction should also be registered
 in the controller with a command or session ID, status, meaningful next check,
@@ -526,8 +586,9 @@ after a job finishes; it is not a required experiment archive.
 Regardless of retention, propagate changes in scientific meaning upward:
 
 - invalidate affected L2 result rows when a bug changes their support;
-- notify model-family changes in plain language;
-- notify every scientific problem or method-cluster switch in plain language;
+- notify a model-family change only when it changes the L2 mechanism,
+  comparability, or conclusion boundary, and describe that macro consequence;
+- notify every problem-path, active-leaf, or method-cluster switch in plain language;
 - update L2 when a repair changes the baseline gap or mechanism conclusion;
 - create a PI question only when the repair requires changing confirmed L1/L2;
 - do not treat a crash or protocol error as evidence that a scientific idea
@@ -559,9 +620,9 @@ headline claim.
 
 ## Legacy-state audit
 
-Schema-v1 through schema-v12 states are readable. Unstructured L1/L2 approvals,
+Schema-v1 through schema-v14 states are readable. Unstructured L1/L2 approvals,
 unscoped decision questions, or schema-v4 L2 checkpoints without evidence
-references are marked for audit and do not satisfy schema-v13 gates. Schema-v5
+references are marked for audit and do not satisfy current gates. Schema-v5
 scientific checkpoints retain their meaning while receiving an instruction-
 maintenance state during migration. Schema-v6 instruction snapshots migrate to
 the matching scope, and decision questions receive ordered target revisions so
@@ -595,3 +656,17 @@ do not silently turn an unrelated old summary into new user approval. Run
 New states retain only a bounded recent notification window. Legacy notification
 history is preserved until `compact-notifications` is explicitly run, so a
 migration does not silently delete existing project material.
+
+Schema-v13 states receive an empty `research_window` with status `NOT_STARTED`.
+Migration never infers a past execution boundary or attempts from jobs,
+notifications, logs, checkpoint timestamps, or file modification times. The
+first later explicit user run instruction starts the first trustworthy window.
+
+Schema-v14 science migrates conservatively to `problem_path=[problem_id]`; no
+ancestor is inferred. Its old evaluation anchor is archived as scientifically
+unscoped and cannot pass G3. Relocking the exact same leaf, method cluster, and
+falsifiable prediction may also add a plain-language simple-combination
+counterfactual to the durable L2 record without a new PI question. That
+agent-owned enrichment must leave the existing problem, nearest-work gap, core
+mechanism, prediction, contribution type, and innovation claim unchanged; any
+semantic change follows the normal scoped L2 decision rule.

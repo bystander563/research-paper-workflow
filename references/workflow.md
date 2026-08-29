@@ -18,8 +18,45 @@ must be true before the next phase.
 - Project-instruction maintenance is another overlay. It keeps stable repository
   instructions usable but neither creates a research layer nor advances a
   scientific phase.
+- The **current research window** is a replace-on-next-instruction reporting
+  overlay. It summarizes L1/L2 changes since the latest explicit user request
+  to execute research. It is not L4, a workflow phase, an experiment archive,
+  or authority for any scientific gate.
 
 Use these exact phase names in documentation and `research_queue.py`.
+
+## Current research-window lifecycle
+
+Open a new window immediately before acting on each explicit user instruction
+to start, continue, run, iterate, or begin monitoring. `init --phase
+exploration` opens the first window from the same direct instruction;
+subsequent instructions use `window-start`. A new window replaces the prior
+window's cards and retains no window history. It snapshots only the current
+checkpoint identities and baseline/evaluation revisions needed to interpret
+later deltas.
+
+Do not open a window for ordinary discussion, a progress query, a scheduled
+wakeup, or an automatic monitor continuation. These continue or read the
+existing window. If one message asks for the old status and then authorizes
+continuation, run `status --window` and report it before `window-start` replaces
+it.
+
+During the window, maintain keyed L1/L2 summary cards with `window-note` before
+moving to the next scientific action. One stable task-dataset, active leaf,
+method-cluster, or dataset-baseline identity has one card that is updated in
+place. Checkpoint replacements, baseline-roster revisions, and typed scientific
+switches synchronize automatically. Ordinary variants, hyperparameters, seeds,
+bugs, commands, and stop rules are L3 and never become cards.
+An L2 problem card may project the ordered unresolved path ending at that leaf;
+the durable L2 record remains authoritative.
+
+The window's `current_focus` states the active L1/L2 hypothesis, current macro
+test, latest interpretable evidence, and next macro action. The window is a
+non-authoritative reporting cache: it cannot confirm compass/L1/L2, satisfy G3,
+consume a PI decision, or authorize paid compute, writing, or external action.
+When it conflicts with checkpoints, L1/L2 records, the external-baseline roster,
+the evaluation anchor, or PI receipts, those canonical sources win and the
+report must flag the inconsistency.
 
 ## Existing-project intake
 
@@ -130,16 +167,18 @@ Within the confirmed L1 direction:
 
 1. map nearest conceptual work from primary sources and group it by shared
    scientific problem;
-2. build a compact portfolio of meaningful unresolved problems, keeping
-   engineering failures in L3;
+2. build a compact problem map and retain the unresolved path to the deepest
+   defensible active leaf; start at the first unresolved layer, allow one node,
+   and keep engineering failures in L3;
 3. build the external-baseline roster, indexed by every adopted dataset;
-4. for an active problem, define one or more method clusters, each with a shared
-   intuition, mathematical mechanism, and falsifiable prediction;
+4. for the active leaf, define one or more method clusters, each with a shared
+   intuition, mathematical mechanism, simple-combination counterfactual, and
+   falsifiable prediction;
 5. run a cheap representative screen for the active cluster;
 6. give broad tuning only to clusters with credible potential;
 7. compare the resulting ceiling summary with real external methods;
-8. when credible clusters for a problem are exhausted, notify the user and
-   select another paper-grade problem instead of accumulating score patches.
+8. when credible clusters for a leaf are exhausted, notify the user and select
+   another paper-grade leaf instead of accumulating score patches.
 
 The baseline roster must be identified and source-checked before broad tuning.
 Every adopted dataset has its own strongest recent top-conference comparator,
@@ -157,21 +196,27 @@ roles, inconsistent protocol states, and an explicit protocol mismatch labeled
 as verified.
 
 After the roster covers every adopted dataset and before broad tuning, use
-`evaluation-anchor` to lock the agent-selected primary
-metric, its `0–1` or `0–100` scale, and higher-is-better direction. This does not
-create a PI question and does not impose a universal aggregation rule. Replacing
-the anchor is autonomous, but results tied only to the previous revision cannot
-directly pass G3; the report must identify evidence produced or explicitly
-reassessed under the current revision.
+`evaluation-anchor` to lock the ordered problem path, active leaf, method
+cluster, falsifiable prediction, agent-selected primary metric, its `0–1` or
+`0–100` scale, and higher-is-better direction. This creates no PI question and
+imposes no universal aggregation rule. Replacing any anchored field is
+autonomous during exploration, but results tied only to the previous revision
+cannot directly pass G3; report evidence produced or explicitly reassessed under
+the current revision.
+After G2, an exploratory anchor may target a new candidate without silently
+replacing the confirmed story. The mismatch is visible and blocks G3 until the
+user approves a matching replacement L2 checkpoint.
 
 Prepare an L2 decision packet containing:
 
-- the nearest-work problem clusters and compact problem portfolio;
-- the active paper-grade problem ID, plain-language cause, and why this is a
-  scientific contribution rather than an engineering issue;
+- the nearest-work problem clusters, ordered unresolved problem path, and
+  deepest defensible active leaf;
+- the active leaf ID, plain-language cause, and why it is a scientific
+  contribution rather than an engineering issue;
 - one concrete example of how a strong baseline fails;
 - the active method-cluster ID, solution intuition, predicted diagnostic,
-  mathematical mechanism, falsifiable prediction, and minimal implementation;
+  mathematical mechanism, simple-combination counterfactual, falsifiable
+  prediction, and minimal implementation;
 - representative evidence for promising and exhausted problem/method clusters
   only when it affects the next scientific choice;
 - proposed innovation claim and exact difference from nearest work;
@@ -184,10 +229,13 @@ trajectory, failed branch, or stopping rule.
 
 Gate `G2 L2_CONFIRMED`:
 
-- an explicit user decision promotes the identified problem + method cluster +
-  core mechanism + innovation claim;
-- the checkpoint stores the active problem ID, method-cluster ID, nearest-work
-  gap, paper-grade rationale, falsifiable prediction, and contribution type;
+- an explicit user decision promotes the identified problem path + active leaf
+  + method cluster + core mechanism + innovation claim;
+- the checkpoint stores the ordered path, active leaf ID, method-cluster ID,
+  nearest-work gap, paper-grade rationale, simple-combination counterfactual,
+  falsifiable prediction, and contribution type;
+- that path, leaf, method cluster, and prediction exactly match the current
+  pre-tuning evaluation anchor;
 - L2 links to its L1 direction, verified nearest work, external comparison, and
   decision-relevant result evidence;
 - the controller stores resolvable references to the nearest-work,
@@ -202,12 +250,14 @@ Gate `G2 L2_CONFIRMED`:
 
 An implementation win or internally best variant never passes G2 by itself.
 Expert weighted voting, heuristic fusion, module stacking, threshold tuning,
-and similar engineering combinations cannot be promoted as the L2 core
-mechanism. Before G2, every exploratory problem or method-cluster switch is a
-plain-language notification containing the previous and new stable IDs.
-Replacing the confirmed problem, method cluster,
-core mechanism, or innovation claim invalidates G2, creates the corresponding
-notification, and requires another scoped user decision.
+and similar engineering combinations cannot be promoted as the L2 core merely
+by tuning or renaming. A weighted implementation remains eligible when its
+scientific contribution is a distinct estimand, objective, constraint,
+mechanism, or theory and the counterfactual/diagnostic separates it from ordinary
+fusion. Before G2, every exploratory path, active-leaf, or method-cluster switch
+is a plain-language notification. Replacing the confirmed path, leaf, method
+cluster, core mechanism, prediction, or innovation invalidates G2 and requires
+another scoped user decision.
 
 ## Stage 3: Evidence completion -> paper_ready_pending_pi
 
@@ -215,7 +265,9 @@ Continue experiments inside the confirmed L1/L2 contract. Hyperparameters,
 routine metrics, implementation details, diagnostics, and bug repair remain
 agent-owned L3 work unless the user froze them. Resolve engineering problems in
 L3 without presenting them as scientific pivots. Notify model-family changes
-and any L3 event that changes L1/L2 meaning.
+only when they change L2 meaning. When any L3 event changes L1/L2 evidence,
+report only the resulting macro consequence, not the engineering cause or
+repair detail.
 
 Assess the current package against the L1 evidence standard. Do not silently
 replace that standard because results are inconvenient. If a requirement is no
@@ -224,8 +276,9 @@ longer sensible, present a proposed L1 change for user decision.
 Gate `G3 PAPER_DECISION_READY`:
 
 - G1 and G2 remain valid;
-- a current evaluation anchor is tied to the active L1 direction and the scored
-  result is tied to that anchor revision;
+- a current evaluation anchor is tied to the active L1 direction and exactly
+  matches the confirmed L2 problem path, active leaf, method cluster, and
+  falsifiable prediction; the scored result is tied to that anchor revision;
 - the comparison roster covers the dataset-origin anchor, the strongest recent
   top-conference comparator, a different published mechanism, and a strong
   simple baseline whenever those roles are applicable; any missing role has an
@@ -260,7 +313,8 @@ controller retains only the minimal acceptance receipt and its link to the
 assessment.
 
 Before asking the user, generate a readable project-local paper-decision report
-covering the current task, adopted datasets, problem ID, method-cluster ID,
+covering the current task, adopted datasets, compact problem path, active leaf
+ID, method-cluster ID,
 problem in current/nearest work, innovation, concrete method, final results, the
 current roster revision/hash, per-dataset external-baseline matrix, and primary
 comparison dataset, baseline identity/venue/year/source and search scope,

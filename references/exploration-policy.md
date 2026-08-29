@@ -115,6 +115,15 @@ paper title or model family. For each cluster, state the shared limitation that
 remains after its strongest methods. That unresolved limitation is the input to
 problem selection; “nobody combined these modules” is not a problem.
 
+Within confirmed L1, organize those limitations as an ordered active problem
+path. Start at the first unresolved layer and end at the deepest defensible leaf
+that is meaningful, supported by nearest-work evidence, and narrow enough to
+carry a contribution. Do not duplicate a user-fixed field such as “generative
+recommendation” merely to make the path look deep. A one-node path is valid. A
+deeper wording is worse when it is post-hoc, unmeasurable, or only an internal
+nickname. Keep credible alternative leaves in the L2 map, but only one leaf
+drives the active method and innovation at a time.
+
 ## Establish external comparisons before multiplying methods
 
 Nearest work and experimental baselines overlap but are not identical. A paper may be crucial for novelty even when it cannot be run, while a simple baseline may be essential experimentally without being the nearest conceptual work. Record both roles.
@@ -151,8 +160,8 @@ If the current result table contains only our own methods, the scientific compar
 
 ## Derive the method from the problem
 
-Maintain a small paper-grade problem portfolio before multiplying methods. A
-problem is admissible to L2 only when it:
+Maintain a small paper-grade problem map before multiplying methods. An active
+leaf is admissible to L2 only when it:
 
 - exposes a meaningful failure, contradiction, missing capability, estimand, or
   empirical fact rather than a code/runtime inconvenience;
@@ -196,6 +205,15 @@ acceptable only when each part follows from the same identified problem and can
 be tested against a simpler alternative. Prefer one clear mechanism over a
 collection of score-raising patches.
 
+For every core candidate, state a simple-combination counterfactual: what an
+ordinary average, weighted score fusion, heuristic ensemble, or module stack
+cannot represent, identify, optimize, or diagnose about the active leaf. “A
+learned weight may score better” is not enough. Do not impose a keyword ban on
+all weighting: a method may legitimately use weights when the contribution is a
+new estimand, objective, constraint, mechanism, or theory, the weighting follows
+from that object, and a mechanism-sensitive diagnostic distinguishes it from
+ordinary fusion. Weighting itself cannot carry the novelty claim.
+
 Do not choose mathematics merely because it looks novel. If the intuition cannot be explained without equations, or the equations do not change the predicted failure pattern, the method premise is not ready.
 
 For each active problem, organize candidates into method clusters sharing one
@@ -212,10 +230,12 @@ credible clusters for that problem are exhausted or the problem itself proves
 unimportant, mark the problem exhausted and choose another problem from the
 portfolio. Do not keep patching an exhausted cluster for score alone.
 
-Before G2, changing the active exploratory problem or method cluster within the
-confirmed L1 is autonomous but always requires a plain-language notification to
-the user with the previous and new stable IDs. After G2, replacing the confirmed
-problem or core method cluster also requires a new scoped PI decision.
+Before G2, changing the active exploratory problem path, leaf, or method cluster
+within confirmed L1 is autonomous but always requires a plain-language
+notification. Use stable previous/new IDs when the leaf or cluster changes; a
+same-leaf path refinement is described directly rather than forced into a fake
+transition type. After G2, replacing the confirmed path, leaf, core method, or
+innovation also requires a new scoped PI decision.
 
 ## Potential screen and ceiling search
 
@@ -226,12 +246,12 @@ as intended, the comparison baseline is healthy, and at least one diagnostic
 capable of detecting the proposed mechanism was inspected. A weak first
 configuration alone is not enough to reject the idea.
 
-Before broad tuning begins, lock the primary metric, its `0–1` or `0–100`
-scale, and higher-is-better direction in the evaluation anchor. The agent owns
-this technical choice, so it creates no PI question and imposes no universal
-aggregation rule. If the anchor later changes, results tied only to its previous
-revision remain exploratory until they are rerun or explicitly reassessed under
-the new anchor.
+Before broad tuning begins, lock the ordered problem path, active leaf, method
+cluster, falsifiable prediction, primary metric, its `0–1` or `0–100` scale, and
+higher-is-better direction in the evaluation anchor. The agent owns this lock,
+so it creates no PI question and imposes no universal aggregation rule. If any
+anchored scientific or metric field later changes, results tied only to the
+previous revision remain exploratory until rerun or explicitly reassessed.
 
 Treat a method cluster as promising when most of the following hold:
 
@@ -271,7 +291,8 @@ Report a ceiling search to the user in plain language with:
 1. the problem and method being tested;
 2. why the method looked promising;
 3. what was tuned;
-4. the locked metric and the starting and best results under its current revision;
+4. the locked problem path/leaf/method hypothesis, metric, and the starting and
+   best results under that anchor revision;
 5. the gap to the strongest relevant baseline;
 6. stability, failure cases, and remaining weaknesses;
 7. compute cost, estimated ceiling, and whether the evidence now looks paper-worthy.
@@ -281,8 +302,8 @@ external comparison is incomplete or the gain is below the floor. Do not turn a
 promising internal result into a paper recommendation by wording alone.
 
 If a method cluster has no credible potential, stop before broad tuning and move
-to another justified cluster or problem; no individual negative-result record
-is required. Notify every problem or method-cluster switch. Surface additional
+to another justified cluster or leaf; no individual negative-result record is
+required. Notify every problem-path, active-leaf, or method-cluster switch. Surface additional
 failure detail only when it changes the research compass, exhausts or materially
 narrows the portfolio, invalidates a serious premise, or affects an item marked
 `FROZEN_BY_PI`.
@@ -298,8 +319,8 @@ states the mandatory unexposed-dataset search result or its current blocker.
 After L1 confirmation, maintain two compact L2 maps inside that direction:
 
 ```text
-problem ID | status | nearest-work cluster | shared unresolved problem | scientific value | failure evidence | paper-grade rationale | next action
-problem ID | method-cluster ID | status | shared intuition | mathematical mechanism | falsifiable prediction | representative evidence | external-baseline gap | next action
+path position | problem ID | parent problem ID | status | nearest-work cluster | unresolved problem | scientific value | failure evidence | paper-grade rationale | next action
+active leaf problem ID | method-cluster ID | status | shared intuition | mathematical mechanism | simple-combination counterfactual | falsifiable prediction | representative evidence | external-baseline gap | next action
 ```
 
 These are selective scientific maps, not trial logs. Keep the active problem,
@@ -318,7 +339,7 @@ L1 已确认方向 reference：
 候选创新点及与近邻工作的差异：
 第一个可证伪实验及潜力筛选证据：
 调参起点、当前最好结果与外部 baseline 差距（如适用）：
-问题 ID、方法簇 ID、状态及更换通知（如发生）：
+问题路径、活跃叶子 ID、方法簇 ID、状态及更换通知（如发生）：
 L2 科学主线决策来源（如已确认）：
 剩余论文证据缺口、预计时间和算力：
 ```
@@ -327,7 +348,7 @@ Keep a small ranked set rather than a long idea dump. Cheap data and baseline
 feasibility work may precede L1, but sustained method work starts only after L1
 confirmation. Preserve L2 cards that received a user decision or materially
 support the active scientific interpretation; L3 trial detail remains
-discretionary. When a whole problem or method cluster is closed, retain only
+discretionary. When a whole problem leaf or method cluster is closed, retain only
 the compact conclusion needed to justify the next scientific choice, not every
 attempt or stopping rule.
 

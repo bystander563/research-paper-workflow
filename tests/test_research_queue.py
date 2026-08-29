@@ -243,6 +243,9 @@ class ResearchQueueCLITest(unittest.TestCase):
         )
 
     def confirm_science(self, decision_id: str) -> None:
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        if state.get("evaluation_anchor") is None:
+            self.set_evaluation_anchor()
         self.run_cli(
             "confirm",
             self.state,
@@ -256,6 +259,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             decision_id,
             "--direction-id",
             "D001",
+            "--problem-path",
+            "P-DOMAIN",
+            "--problem-path",
+            "P-SHORTCUT",
             "--problem-id",
             "P-SHORTCUT",
             "--method-cluster-id",
@@ -270,6 +277,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "source-identifiable residual representation",
             "--falsifiable-prediction",
             "removing source-identifiable residuals improves unseen-site accuracy",
+            "--simple-combination-counterfactual",
+            "averaging or weighting existing domain-suppression scores cannot isolate the source-identifiable residual variable",
             "--contribution-type",
             "mechanism",
             "--innovation-claim",
@@ -293,11 +302,39 @@ class ResearchQueueCLITest(unittest.TestCase):
         primary_metric: str = "balanced accuracy",
         metric_scale: str = "unit_interval",
         reason: str = "official task metric selected before broad tuning",
+        problem_path: tuple[str, ...] = ("P-DOMAIN", "P-SHORTCUT"),
+        problem_id: str = "P-SHORTCUT",
+        method_cluster_id: str = "M-RESIDUAL",
+        falsifiable_prediction: str = "removing source-identifiable residuals improves unseen-site accuracy",
+        legacy_counterfactual: str | None = None,
         ok: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        return self.run_cli(
+        if ok and self.state.exists():
+            state = json.loads(self.state.read_text(encoding="utf-8"))
+            current = state.get("evaluation_anchor") or {}
+            if (
+                current.get("problem_path") == list(problem_path)
+                and current.get("problem_id") == problem_id
+                and current.get("method_cluster_id") == method_cluster_id
+                and current.get("falsifiable_prediction") == falsifiable_prediction
+                and current.get("primary_metric") == primary_metric
+                and current.get("metric_scale") == metric_scale
+                and current.get("metric_direction") == "higher_is_better"
+            ):
+                return self.run_cli("status", self.state)
+        args = [
             "evaluation-anchor",
             self.state,
+        ]
+        for item in problem_path:
+            args.extend(["--problem-path", item])
+        args.extend([
+            "--problem-id",
+            problem_id,
+            "--method-cluster-id",
+            method_cluster_id,
+            "--falsifiable-prediction",
+            falsifiable_prediction,
             "--primary-metric",
             primary_metric,
             "--metric-scale",
@@ -306,8 +343,12 @@ class ResearchQueueCLITest(unittest.TestCase):
             "higher_is_better",
             "--reason",
             reason,
-            ok=ok,
-        )
+        ])
+        if legacy_counterfactual is not None:
+            args.extend(
+                ["--legacy-simple-combination-counterfactual", legacy_counterfactual]
+            )
+        return self.run_cli(*args, ok=ok)
 
     def enter_paper_ready(
         self,
@@ -334,8 +375,26 @@ class ResearchQueueCLITest(unittest.TestCase):
                 our_score=our_score,
             )
         state = json.loads(self.state.read_text(encoding="utf-8"))
-        if set_anchor and state.get("evaluation_anchor") is None:
-            self.set_evaluation_anchor(primary_metric, metric_scale)
+        if set_anchor:
+            science_payload = (
+                (state.get("layer_checkpoints") or {}).get("science") or {}
+            ).get("payload") or {}
+            self.set_evaluation_anchor(
+                primary_metric,
+                metric_scale,
+                problem_path=tuple(
+                    science_payload.get("problem_path")
+                    or ("P-DOMAIN", "P-SHORTCUT")
+                ),
+                problem_id=science_payload.get("problem_id") or "P-SHORTCUT",
+                method_cluster_id=(
+                    science_payload.get("method_cluster_id") or "M-RESIDUAL"
+                ),
+                falsifiable_prediction=(
+                    science_payload.get("falsifiable_prediction")
+                    or "removing source-identifiable residuals improves unseen-site accuracy"
+                ),
+            )
         baseline_search_scope = "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28"
         baseline_source = "baseline citation and result table recorded in L2"
         dataset_baseline_matrix = json.dumps(
@@ -849,6 +908,9 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.add_answer("direction", "Choose D001?", outcome="select")
         )
         self.confirm_science(self.add_answer("science", "Promote S001?"))
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["evaluation_anchor"] = None
+        self.state.write_text(json.dumps(state), encoding="utf-8")
         assessment = self.root / "paper-ready-no-anchor.md"
         assessment.write_text("# Paper ready\n", encoding="utf-8")
 
@@ -1376,7 +1438,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
         summary = json.loads(self.run_cli("status", self.state).stdout)
-        self.assertEqual(summary["schema_version"], 13)
+        self.assertEqual(summary["schema_version"], 15)
         self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
         self.assertEqual(
             summary["instruction_maintenance"]["recent_updates"], []
@@ -1475,6 +1537,12 @@ class ResearchQueueCLITest(unittest.TestCase):
             decision="Select D001",
         )
         self.confirm_direction(direction_q)
+        self.set_evaluation_anchor(
+            problem_path=("P-AUTHORITY",),
+            problem_id="P-AUTHORITY",
+            method_cluster_id="M-AUTHORITY",
+            falsifiable_prediction="prediction",
+        )
         result = self.run_cli(
             "confirm",
             self.state,
@@ -1488,6 +1556,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             direction_q,
             "--direction-id",
             "D001",
+            "--problem-path",
+            "P-AUTHORITY",
             "--problem-id",
             "P-AUTHORITY",
             "--method-cluster-id",
@@ -1502,6 +1572,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "mechanism",
             "--falsifiable-prediction",
             "prediction",
+            "--simple-combination-counterfactual",
+            "ordinary score fusion cannot represent the claimed mechanism",
             "--contribution-type",
             "mechanism",
             "--innovation-claim",
@@ -1653,6 +1725,13 @@ class ResearchQueueCLITest(unittest.TestCase):
             line for line in initial_l2.splitlines() if line.startswith("Last material update:")
         )
         for science_id, problem in (("S001", "old problem"), ("S002", "new problem")):
+            self.set_evaluation_anchor(
+                problem_path=(f"P-{science_id}",),
+                problem_id=f"P-{science_id}",
+                method_cluster_id=f"M-{science_id}",
+                falsifiable_prediction=f"prediction for {science_id}",
+                reason=f"lock {science_id} scientific scope before broad tuning",
+            )
             self.run_cli(
                 "confirm",
                 self.state,
@@ -1668,6 +1747,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "approve",
                 "--direction-id",
                 "D002",
+                "--problem-path",
+                f"P-{science_id}",
                 "--problem-id",
                 f"P-{science_id}",
                 "--method-cluster-id",
@@ -1682,6 +1763,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                 f"mechanism {science_id}",
                 "--falsifiable-prediction",
                 f"prediction for {science_id}",
+                "--simple-combination-counterfactual",
+                f"ordinary score fusion cannot express mechanism {science_id}",
                 "--contribution-type",
                 "mechanism",
                 "--innovation-claim",
@@ -1946,6 +2029,13 @@ class ResearchQueueCLITest(unittest.TestCase):
         )
         self.set_baseline_roster(status="IDENTIFIED")
         l2_d2 = self.root / ".codex" / "research" / "L2" / "D002.md"
+        self.set_evaluation_anchor(
+            problem_path=("P-S002",),
+            problem_id="P-S002",
+            method_cluster_id="M-S002",
+            falsifiable_prediction="m2 improves the primary outcome",
+            reason="lock replacement scientific scope before broad tuning",
+        )
         self.run_cli(
             "confirm",
             self.state,
@@ -1961,6 +2051,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "approve",
             "--direction-id",
             "D002",
+            "--problem-path",
+            "P-S002",
             "--problem-id",
             "P-S002",
             "--method-cluster-id",
@@ -1975,6 +2067,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "m2",
             "--falsifiable-prediction",
             "m2 improves the primary outcome",
+            "--simple-combination-counterfactual",
+            "ordinary score fusion cannot represent m2",
             "--contribution-type",
             "mechanism",
             "--innovation-claim",
@@ -2274,6 +2368,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             "Current task: cross-site classification",
             "Dataset: Dataset-A+Dataset-B",
             "Problem in current work: site-specific shortcuts",
+            "Active problem path: P-DOMAIN -> P-SHORTCUT",
             "Innovation: remove shortcut information without target labels",
             "Concrete method: residual removal with a source-identifiability penalty",
             "Final results: 0.81 versus 0.8 on the primary matched evaluation",
@@ -2337,7 +2432,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 15)
         self.assertEqual(
             migrated["layer_checkpoints"]["direction"]["status"],
             "LEGACY_CONFIRMED_NEEDS_AUDIT",
@@ -2374,9 +2469,13 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema-v12 migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 13)
-        self.assertTrue(migrated["evaluation_anchor"]["legacy_derived"])
-        self.assertEqual(migrated["evaluation_anchor"]["revision"], 1)
+        self.assertEqual(migrated["schema_version"], 15)
+        self.assertIsNone(migrated["evaluation_anchor"])
+        self.assertTrue(migrated["evaluation_anchor_history"][-1]["legacy_derived"])
+        self.assertEqual(
+            migrated["evaluation_anchor_history"][-1]["invalidated_by"],
+            "schema_v15_scientific_scope_upgrade",
+        )
         self.assertIsNone(migrated["paper_ready_assessment"])
         self.assertEqual(migrated["phase"], "confirmed_project")
         self.assertEqual(
@@ -2385,7 +2484,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIsNone(migrated["seed_selection_risk_acceptance"])
         audit = json.loads(self.run_cli("audit", self.state, ok=False).stdout)
         codes = {issue["code"] for issue in audit["control_issues"]}
-        self.assertIn("EVALUATION_ANCHOR_LEGACY_RELOCK_REQUIRED", codes)
+        self.assertIn("LEGACY_SCIENCE_NEEDS_RECONFIRMATION", codes)
         self.assertIn("DATASET_BASELINE_ROSTER_INVALID", codes)
 
         self.set_baseline_roster(status="IDENTIFIED")
@@ -3260,6 +3359,12 @@ class ResearchQueueCLITest(unittest.TestCase):
             evidence = Path(outside_raw) / "evidence.md"
             original = "# external evidence\nimmutable source\n"
             evidence.write_text(original, encoding="utf-8")
+            self.set_evaluation_anchor(
+                problem_path=("P-EXTERNAL",),
+                problem_id="P-EXTERNAL",
+                method_cluster_id="M-EXTERNAL",
+                falsifiable_prediction="the mechanism improves unseen-domain outcomes",
+            )
             self.run_cli(
                 "confirm",
                 self.state,
@@ -3275,6 +3380,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "approve",
                 "--direction-id",
                 "D001",
+                "--problem-path",
+                "P-EXTERNAL",
                 "--problem-id",
                 "P-EXTERNAL",
                 "--method-cluster-id",
@@ -3289,6 +3396,8 @@ class ResearchQueueCLITest(unittest.TestCase):
                 "m",
                 "--falsifiable-prediction",
                 "the mechanism improves unseen-domain outcomes",
+                "--simple-combination-counterfactual",
+                "ordinary score fusion cannot isolate the external-domain mechanism",
                 "--contribution-type",
                 "mechanism",
                 "--innovation-claim",
@@ -3345,7 +3454,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("notify", self.state, "--text", "save migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
         questions = {q["id"]: q for q in migrated["macro_questions"]}
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 15)
         self.assertEqual(questions[first]["superseded_by"], second)
         self.assertEqual(
             migrated["decision_target_revisions"]["direction:D001"], 2
@@ -3364,7 +3473,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 15)
         self.assertEqual(
             migrated["instruction_maintenance"]["recent_scope_removals"], []
         )
@@ -3582,6 +3691,13 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.add_answer("direction", "Choose D001?", outcome="select")
         )
         self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_evaluation_anchor(
+            problem_path=("P-TRANSPORT", "P-SHORTCUT-2"),
+            problem_id="P-SHORTCUT-2",
+            method_cluster_id="M-CAUSAL",
+            falsifiable_prediction="transport regularization improves unseen-site accuracy",
+            reason="lock replacement scientific scope before broad tuning",
+        )
         common = [
             "confirm",
             self.state,
@@ -3597,6 +3713,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             "approve",
             "--direction-id",
             "D001",
+            "--problem-path",
+            "P-TRANSPORT",
+            "--problem-path",
+            "P-SHORTCUT-2",
             "--problem-id",
             "P-SHORTCUT-2",
             "--method-cluster-id",
@@ -3611,6 +3731,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "causal shortcut transport regularization",
             "--falsifiable-prediction",
             "transport regularization improves unseen-site accuracy",
+            "--simple-combination-counterfactual",
+            "weighted score fusion cannot identify or interrupt the transport mechanism",
             "--contribution-type",
             "mechanism",
             "--innovation-claim",
@@ -3692,6 +3814,12 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.confirm_direction(
             self.add_answer("direction", "Choose D001?", outcome="select")
         )
+        self.set_evaluation_anchor(
+            problem_path=("P-VOTE",),
+            problem_id="P-VOTE",
+            method_cluster_id="M-VOTE",
+            falsifiable_prediction="voting raises accuracy",
+        )
         blocked = self.run_cli(
             "confirm",
             self.state,
@@ -3707,6 +3835,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "approve",
             "--direction-id",
             "D001",
+            "--problem-path",
+            "P-VOTE",
             "--problem-id",
             "P-VOTE",
             "--method-cluster-id",
@@ -3721,6 +3851,8 @@ class ResearchQueueCLITest(unittest.TestCase):
             "weighted expert voting",
             "--falsifiable-prediction",
             "voting raises accuracy",
+            "--simple-combination-counterfactual",
+            "the proposal itself is only a weighted combination",
             "--contribution-type",
             "mechanism",
             "--innovation-claim",
@@ -3742,6 +3874,214 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertIn("engineering-only", blocked.stderr)
         state = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(state["layer_checkpoints"]["science"]["status"], "UNSET")
+
+    def test_problem_path_must_be_nonempty_unique_and_end_at_leaf(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        missing = self.run_cli(
+            "evaluation-anchor",
+            self.state,
+            "--problem-id",
+            "P-LEAF",
+            "--method-cluster-id",
+            "M-ONE",
+            "--falsifiable-prediction",
+            "prediction",
+            "--primary-metric",
+            "balanced accuracy",
+            "--metric-scale",
+            "unit_interval",
+            "--metric-direction",
+            "higher_is_better",
+            "--reason",
+            "pre-tuning lock",
+            ok=False,
+        )
+        self.assertIn("--problem-path", missing.stderr)
+        duplicate = self.set_evaluation_anchor(
+            problem_path=("P-A", "P-A"),
+            problem_id="P-A",
+            method_cluster_id="M-ONE",
+            falsifiable_prediction="prediction",
+            ok=False,
+        )
+        self.assertIn("cannot repeat", duplicate.stderr)
+        disconnected = self.set_evaluation_anchor(
+            problem_path=("P-A", "P-B"),
+            problem_id="P-LEAF",
+            method_cluster_id="M-ONE",
+            falsifiable_prediction="prediction",
+            ok=False,
+        )
+        self.assertIn("must end at the active problem ID", disconnected.stderr)
+
+    def test_problem_scope_anchor_change_blocks_old_confirmed_story(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        self.set_evaluation_anchor(
+            problem_path=("P-NEW",),
+            problem_id="P-NEW",
+            method_cluster_id="M-NEW",
+            falsifiable_prediction="the new mechanism changes the failure pattern",
+            reason="switch the exploratory scientific hypothesis before tuning",
+        )
+        assessment = self.root / "paper-ready-old-story.md"
+        assessment.write_text("# Candidate paper\n", encoding="utf-8")
+        blocked = self.enter_paper_ready(
+            assessment,
+            set_anchor=False,
+            ok=False,
+        )
+        self.assertIn("confirmed L2 problem path", blocked.stderr)
+        status = json.loads(self.run_cli("status", self.state).stdout)
+        self.assertEqual(status["layer_checkpoints"]["science"]["id"], "S001")
+        self.assertEqual(status["evaluation_anchor"]["problem_id"], "P-NEW")
+
+    def test_weighted_estimand_is_not_blanket_rejected(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+
+        def candidate_args(
+            problem_id: str,
+            method_id: str,
+            core: str,
+            counterfactual: str,
+            contribution: str,
+            innovation: str,
+        ) -> list[object]:
+            return [
+                "confirm",
+                self.state,
+                "--layer",
+                "science",
+                "--id",
+                f"S-{problem_id}",
+                "--record",
+                self.l2,
+                "--pi-decision",
+                f"Evaluate {problem_id}",
+                "--pi-outcome",
+                "approve",
+                "--direction-id",
+                "D001",
+                "--problem-path",
+                problem_id,
+                "--problem-id",
+                problem_id,
+                "--method-cluster-id",
+                method_id,
+                "--problem",
+                "target-dependent ranking bias",
+                "--nearest-work-gap",
+                "nearest methods leave the target estimand unidentified",
+                "--paper-grade-rationale",
+                "the gap concerns what is estimated rather than implementation",
+                "--core-mechanism",
+                core,
+                "--falsifiable-prediction",
+                f"prediction for {problem_id}",
+                "--simple-combination-counterfactual",
+                counterfactual,
+                "--contribution-type",
+                contribution,
+                "--innovation-claim",
+                innovation,
+                "--external-baseline-status",
+                "roster identified",
+                "--ceiling-summary",
+                "screen complete",
+                "--problem-portfolio-record",
+                self.l2,
+                "--nearest-work-record",
+                self.l2,
+                "--baseline-record",
+                self.l2,
+                "--result-record",
+                self.l2,
+            ]
+
+        self.set_evaluation_anchor(
+            problem_path=("P-ESTIMAND",),
+            problem_id="P-ESTIMAND",
+            method_cluster_id="M-RISK",
+            falsifiable_prediction="prediction for P-ESTIMAND",
+            reason="lock a distinct target-risk estimand before tuning",
+        )
+        self.run_cli(
+            *candidate_args(
+                "P-ESTIMAND",
+                "M-RISK",
+                "importance-weighted target-risk estimand",
+                "ordinary weighted voting cannot identify target risk because it preserves the source decision estimand",
+                "estimand",
+                "identify a target-transfer risk estimand with observable diagnostics",
+            )
+        )
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["layer_checkpoints"]["science"]["payload"]["contribution_type"],
+            "estimand",
+        )
+
+    def test_schema_v14_migrates_only_the_leaf_and_enriches_without_new_pi_question(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        science = state["layer_checkpoints"]["science"]
+        original_semantics = {
+            key: science["payload"][key]
+            for key in (
+                "problem_id",
+                "problem",
+                "nearest_work_gap",
+                "core_mechanism",
+                "falsifiable_prediction",
+                "contribution_type",
+                "innovation_claim",
+            )
+        }
+        science["payload"].pop("problem_path")
+        science["payload"].pop("simple_combination_counterfactual")
+        science["summary"] = json.dumps(science["payload"], sort_keys=True)
+        state["schema_version"] = 14
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+        self.run_cli("notify", self.state, "--text", "trigger v15 migration")
+        migrated = json.loads(self.state.read_text(encoding="utf-8"))
+        migrated_science = migrated["layer_checkpoints"]["science"]
+        self.assertEqual(migrated_science["payload"]["problem_path"], ["P-SHORTCUT"])
+        self.assertTrue(
+            migrated_science["payload"]["legacy_method_counterfactual_unscoped"]
+        )
+        self.assertIsNone(migrated["evaluation_anchor"])
+        pending_before = len(
+            [q for q in migrated["macro_questions"] if q["status"] == "PENDING_PI"]
+        )
+
+        self.set_evaluation_anchor(
+            problem_path=("P-SHORTCUT",),
+            legacy_counterfactual="ordinary weighted fusion cannot isolate the source-identifiable residual variable",
+        )
+        enriched = json.loads(self.state.read_text(encoding="utf-8"))
+        payload = enriched["layer_checkpoints"]["science"]["payload"]
+        self.assertNotIn("legacy_method_counterfactual_unscoped", payload)
+        self.assertEqual(
+            {key: payload[key] for key in original_semantics}, original_semantics
+        )
+        pending_after = len(
+            [q for q in enriched["macro_questions"] if q["status"] == "PENDING_PI"]
+        )
+        self.assertEqual(pending_after, pending_before)
 
     def test_monitor_artifact_acknowledgements_are_per_job_and_explicitly_cleared(self) -> None:
         self.init_exploration()
@@ -3856,7 +4196,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             migrated["monitoring"]["legacy_unscoped_artifact_fingerprint"],
             "legacy-artifact",
         )
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 15)
         self.assertTrue(
             migrated["dataset_baseline_roster"]["schema_v13_review_required"]
         )
@@ -3887,13 +4227,368 @@ class ResearchQueueCLITest(unittest.TestCase):
         migrated = json.loads(
             self.run_cli("status", self.state).stdout
         )
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 15)
         self.assertEqual(migrated["phase"], "confirmed_project")
         self.assertIsNone(migrated["paper_ready_assessment_usable"])
         self.assertIn(
             "DATASET_BASELINE_ROSTER_INVALID",
             {item["code"] for item in migrated["control_issues"]},
         )
+
+    def test_window_status_is_macro_only_and_read_only(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J-L3",
+            "--description",
+            "debug CUDA out of memory in loader",
+            "--command",
+            "python debug_loader.py --raw-stacktrace",
+            "--status",
+            "running",
+            "--next-poll",
+            "after restart",
+            "--next-action",
+            "inspect internal tensor allocation",
+        )
+        before = json.loads(self.state.read_text(encoding="utf-8"))["research_window"]
+        report = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        after = json.loads(self.state.read_text(encoding="utf-8"))["research_window"]
+        self.assertEqual(before, after)
+        self.assertEqual(report["window_availability"], "ACTIVE")
+        serialized = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn("active_jobs", report)
+        self.assertNotIn("J-L3", serialized)
+        self.assertNotIn("CUDA", serialized)
+        self.assertNotIn("debug_loader.py", serialized)
+        self.assertNotIn("control_issue_codes", report)
+
+    def test_macro_only_policy_has_no_project_level_l3_disclosure_override(self) -> None:
+        policy = (ROOT / "references" / "collaboration-policy.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(
+            "unless the user explicitly changes this project-specific communication preference",
+            policy,
+        )
+        self.assertIn(
+            "cannot be bypassed by an ad hoc progress or debugging request",
+            policy,
+        )
+
+    def test_window_status_excludes_notifications_from_before_window_start(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "notify",
+            self.state,
+            "--kind",
+            "method_cluster_switch",
+            "--from-id",
+            "M-OLD",
+            "--to-id",
+            "M-STALE",
+            "--text",
+            "This notification belongs to the previous window.",
+        )
+        self.run_cli(
+            "window-start",
+            self.state,
+            "--instruction",
+            "PI explicitly asked to continue after the old-window report",
+        )
+        empty_report = json.loads(
+            self.run_cli("status", self.state, "--window").stdout
+        )
+        self.assertEqual(empty_report["macro_notifications"], [])
+
+        self.run_cli(
+            "notify",
+            self.state,
+            "--kind",
+            "method_cluster_switch",
+            "--from-id",
+            "M-STALE",
+            "--to-id",
+            "M-CURRENT",
+            "--text",
+            "This notification belongs to the current window.",
+        )
+        current_report = json.loads(
+            self.run_cli("status", self.state, "--window").stdout
+        )
+        self.assertEqual(len(current_report["macro_notifications"]), 1)
+        self.assertEqual(
+            current_report["macro_notifications"][0]["transition"]["to_id"],
+            "M-CURRENT",
+        )
+
+    def test_window_cards_upsert_by_scientific_identity_and_preserve_summary(self) -> None:
+        self.init_exploration()
+        first_compact = json.loads(
+            self.run_cli("status", self.state, "--compact").stdout
+        )
+        base_args = [
+            "window-note",
+            self.state,
+            "--layer",
+            "L2",
+            "--kind",
+            "method_cluster",
+            "--subject-id",
+            "M-CAUSAL",
+            "--title",
+            "causal residual transport",
+            "--status",
+            "PROMISING",
+            "--external-baseline-gap",
+            "0.8 percentage points below matched SIGIR baseline",
+            "--next-action",
+            "run a ceiling screen on Dataset-A",
+        ]
+        self.run_cli(
+            *base_args,
+            "--verified-observation",
+            "cheap screen reached 81.2",
+            "--interpretation",
+            "the predicted residual effect is visible",
+            "--starting-result",
+            "80.1",
+            "--latest-result",
+            "81.2",
+            "--set-current",
+            "--hypothesis",
+            "transport regularization should improve the residual diagnostic",
+            "--current-action",
+            "estimate the method-cluster ceiling",
+            "--focus-latest-result",
+            "cheap screen 81.2",
+        )
+        self.run_cli(
+            *base_args,
+            "--verified-observation",
+            "ceiling screen reached 82.0",
+            "--interpretation",
+            "the cluster remains promising but has not passed the external baseline",
+            "--best-result",
+            "82.0",
+            "--latest-result",
+            "82.0",
+        )
+        report = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        cards = [
+            card
+            for card in report["research_window"]["l2_cards"]
+            if card["subject_id"] == "M-CAUSAL"
+        ]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["starting_result"], "80.1")
+        self.assertEqual(cards[0]["best_result"], "82.0")
+        self.assertEqual(cards[0]["latest_result"], "82.0")
+        compact = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        self.assertGreater(compact["research_window_revision"], 1)
+        self.assertNotEqual(
+            compact["wakeup_fingerprint"], first_compact["wakeup_fingerprint"]
+        )
+        self.assertNotIn("causal residual transport", json.dumps(compact))
+
+    def test_window_rejects_l3_and_does_not_grant_scientific_authority(self) -> None:
+        self.init_exploration()
+        rejected = self.run_cli(
+            "window-note",
+            self.state,
+            "--layer",
+            "L3",
+            "--kind",
+            "method_cluster",
+            "--subject-id",
+            "BUG-1",
+            "--title",
+            "loader repair",
+            "--status",
+            "PROMISING",
+            "--verified-observation",
+            "the loader runs",
+            "--interpretation",
+            "engineering repair",
+            "--external-baseline-gap",
+            "not applicable",
+            "--next-action",
+            "keep debugging",
+            ok=False,
+        )
+        self.assertIn("invalid choice", rejected.stderr)
+        self.run_cli(
+            "window-note",
+            self.state,
+            "--layer",
+            "L2",
+            "--kind",
+            "problem",
+            "--subject-id",
+            "P-NEW",
+            "--title",
+            "new paper-grade problem",
+            "--status",
+            "PROMISING",
+            "--verified-observation",
+            "a repeatable failure was observed",
+            "--interpretation",
+            "the failure may support a mechanism contribution",
+            "--external-baseline-gap",
+            "comparison not yet matched",
+            "--next-action",
+            "screen one falsifiable mechanism",
+        )
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(stored["layer_checkpoints"]["direction"]["status"], "UNSET")
+        self.assertEqual(stored["layer_checkpoints"]["science"]["status"], "UNSET")
+        self.assertEqual(stored["phase"], "exploration")
+
+    def test_new_window_replaces_cards_without_history(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "window-note",
+            self.state,
+            "--layer",
+            "L1",
+            "--kind",
+            "task_dataset",
+            "--subject-id",
+            "D-CANDIDATE",
+            "--title",
+            "candidate task and dataset",
+            "--status",
+            "SCOUTING",
+            "--verified-observation",
+            "dataset has measurable headroom",
+            "--interpretation",
+            "candidate remains worth checking",
+            "--external-baseline-gap",
+            "strongest comparator still being verified",
+            "--next-action",
+            "check nearest-work collision",
+        )
+        previous = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        self.assertEqual(previous["research_window"]["id"], "W001")
+        self.assertEqual(len(previous["research_window"]["l1_cards"]), 1)
+        self.run_cli(
+            "window-start",
+            self.state,
+            "--instruction",
+            "PI explicitly asked to continue the selected research direction",
+        )
+        current = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        self.assertEqual(current["research_window"]["id"], "W002")
+        self.assertEqual(current["research_window"]["l1_cards"], [])
+        stored = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertNotIn("research_window_history", stored)
+
+    def test_scientific_switch_is_automatically_visible_in_window(self) -> None:
+        self.init_exploration()
+        self.run_cli(
+            "notify",
+            self.state,
+            "--kind",
+            "method_cluster_switch",
+            "--from-id",
+            "M-OLD",
+            "--to-id",
+            "M-NEW",
+            "--text",
+            "旧方法簇缺少潜力，改测新的可证伪机制；L1 不变。",
+        )
+        report = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        cards = report["research_window"]["l2_cards"]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["subject_id"], "M-NEW")
+        self.assertEqual(cards[0]["kind"], "method_cluster")
+        self.assertEqual(report["macro_notifications"][0]["kind"], "method_cluster_switch")
+
+    def test_confirmed_l1_and_baseline_roster_sync_into_window(self) -> None:
+        self.init_exploration()
+        self.confirm_direction(
+            self.add_answer("direction", "Choose D001?", outcome="select")
+        )
+        report = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        self.assertEqual(
+            [card["subject_id"] for card in report["research_window"]["l1_cards"]],
+            ["D001"],
+        )
+        baseline_cards = [
+            card
+            for card in report["research_window"]["l2_cards"]
+            if card["kind"] == "baseline_comparison"
+        ]
+        self.assertEqual(
+            {card["subject_id"] for card in baseline_cards},
+            {"dataset:Dataset-A", "dataset:Dataset-B"},
+        )
+        self.assertTrue(
+            all("matched numeric gap not yet available" in card["external_baseline_gap"] for card in baseline_cards)
+        )
+        self.confirm_science(self.add_answer("science", "Promote S001?"))
+        report = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        problem_card = next(
+            card
+            for card in report["research_window"]["l2_cards"]
+            if card["kind"] == "problem"
+        )
+        self.assertEqual(problem_card["problem_path"], ["P-DOMAIN", "P-SHORTCUT"])
+        self.assertEqual(
+            report["evaluation_anchor"]["problem_path"],
+            ["P-DOMAIN", "P-SHORTCUT"],
+        )
+
+    def test_scheduled_monitor_operations_continue_same_window(self) -> None:
+        self.init_exploration()
+        before = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        self.run_cli(
+            "job-add",
+            self.state,
+            "--id",
+            "J001",
+            "--description",
+            "internal execution job",
+            "--command",
+            "python run.py",
+            "--status",
+            "running",
+            "--next-poll",
+            "after completion",
+            "--next-action",
+            "process scientific result if it changes",
+        )
+        changed = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        self.run_cli(
+            "monitor-ack",
+            self.state,
+            "--wakeup-fingerprint",
+            changed["wakeup_fingerprint"],
+            "--job-id",
+            "J001",
+            "--artifact-fingerprint",
+            "result-sha:one",
+        )
+        after = json.loads(self.run_cli("status", self.state, "--compact").stdout)
+        self.assertEqual(before["research_window_id"], after["research_window_id"])
+        self.assertEqual(
+            before["research_window_revision"], after["research_window_revision"]
+        )
+
+    def test_schema_v13_migration_does_not_fabricate_window_history(self) -> None:
+        self.init_exploration()
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["schema_version"] = 13
+        state.pop("research_window", None)
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        report = json.loads(self.run_cli("status", self.state, "--window").stdout)
+        self.assertEqual(report["schema_version"], 15)
+        self.assertEqual(report["window_availability"], "NOT_RECORDED")
+        self.assertEqual(report["research_window"]["l1_cards"], [])
+        self.assertEqual(report["research_window"]["l2_cards"], [])
+        self.assertIn("No trustworthy since-last-run window", report["missing_window_notice"])
 
 
 if __name__ == "__main__":

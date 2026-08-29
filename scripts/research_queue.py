@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 15
 SUPPORTED_SCHEMA_VERSIONS = set(range(1, SCHEMA_VERSION + 1))
 MIN_PAPER_READY_GAIN_POINTS = 1.0
 MAX_MACRO_QUESTIONS = 5
@@ -67,6 +67,7 @@ CHECKPOINT_LAYER_FIELDS = {
     },
     "science": {
         "direction_id",
+        "problem_path",
         "problem_id",
         "method_cluster_id",
         "problem",
@@ -74,6 +75,7 @@ CHECKPOINT_LAYER_FIELDS = {
         "paper_grade_rationale",
         "core_mechanism",
         "falsifiable_prediction",
+        "simple_combination_counterfactual",
         "contribution_type",
         "innovation_claim",
         "external_baseline_status",
@@ -152,6 +154,31 @@ NOTIFICATION_KINDS = {
     "method_cluster_switch",
     "model_family_change",
     "problem_switch",
+    "problem_path_change",
+}
+WINDOW_CARD_KINDS_BY_LAYER = {
+    "L1": {"task_dataset"},
+    "L2": {"baseline_comparison", "method_cluster", "problem"},
+}
+WINDOW_CARD_STATUSES = {
+    "BLOCKED",
+    "CEILING_SEARCH",
+    "CLOSED",
+    "CURRENT",
+    "EXHAUSTED",
+    "IDENTIFIED",
+    "MATCHED",
+    "PROMISING",
+    "SCOUTING",
+    "SCREENING",
+    "SELECTED",
+}
+WINDOW_TERMINAL_STATUSES = {"BLOCKED", "CLOSED", "EXHAUSTED"}
+WINDOW_MACRO_NOTIFICATION_KINDS = {
+    "method_cluster_switch",
+    "model_family_change",
+    "problem_switch",
+    "problem_path_change",
 }
 SEED_SELECTION_RISK_TARGET_PREFIX = "paper:seed-selection-risk:"
 PAPER_ASSESSMENT_TEXT_FIELDS = (
@@ -188,6 +215,7 @@ PAPER_ASSESSMENT_CONTEXT_FIELDS = (
     "dataset",
     "adopted_datasets",
     "current_work_problem",
+    "problem_path",
     "problem_id",
     "method_cluster_id",
     "innovation",
@@ -316,6 +344,38 @@ def validate_checkpoint_id(raw: str) -> str:
             "or hyphens, must start with a letter or digit, and cannot contain a path"
         )
     return value
+
+
+def normalize_problem_path(
+    raw: Any, *, active_leaf: str | None = None, label: str = "problem path"
+) -> list[str]:
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise SystemExit(f"{label} must contain at least one ordered problem ID")
+    normalized = [validate_checkpoint_id(str(item or "")) for item in raw]
+    if len(set(normalized)) != len(normalized):
+        raise SystemExit(f"{label} cannot repeat a problem ID")
+    if active_leaf is not None:
+        leaf = validate_checkpoint_id(active_leaf)
+        if normalized[-1] != leaf:
+            raise SystemExit(
+                f"{label} must end at the active problem ID {leaf!r}; do not leave a "
+                "disconnected or trailing branch"
+            )
+    return normalized
+
+
+def problem_path_complete(raw: Any, active_leaf: Any) -> bool:
+    if not nonblank(active_leaf):
+        return False
+    try:
+        normalize_problem_path(raw, active_leaf=str(active_leaf))
+    except SystemExit:
+        return False
+    return True
+
+
+def simple_combination_counterfactual_complete(value: Any) -> bool:
+    return nonblank(value)
 
 
 def finite_number(value: Any) -> bool:
@@ -765,6 +825,9 @@ def evaluation_anchor_complete(anchor: Any) -> bool:
         not isinstance(anchor.get(field), str) or not anchor[field].strip()
         for field in (
             "direction_id",
+            "problem_id",
+            "method_cluster_id",
+            "falsifiable_prediction",
             "primary_metric",
             "metric_scale",
             "metric_direction",
@@ -774,7 +837,8 @@ def evaluation_anchor_complete(anchor: Any) -> bool:
     ):
         return False
     return (
-        anchor["metric_scale"] in {"unit_interval", "percentage"}
+        problem_path_complete(anchor.get("problem_path"), anchor.get("problem_id"))
+        and anchor["metric_scale"] in {"unit_interval", "percentage"}
         and anchor["metric_direction"] in METRIC_DIRECTIONS
     )
 
@@ -785,8 +849,29 @@ def evaluation_anchor_usable(state: dict[str, Any]) -> bool:
     return bool(
         evaluation_anchor_complete(anchor)
         and not anchor.get("legacy_derived")
+        and not anchor.get("legacy_scientific_scope_unscoped")
         and direction.get("status") == "CONFIRMED_BY_PI"
         and anchor.get("direction_id") == direction.get("id")
+    )
+
+
+def science_matches_evaluation_anchor(state: dict[str, Any]) -> bool:
+    anchor = state.get("evaluation_anchor") or {}
+    science = (state.get("layer_checkpoints") or {}).get("science") or {}
+    payload = science.get("payload") or {}
+    return bool(
+        evaluation_anchor_usable(state)
+        and science.get("status") == "CONFIRMED_BY_PI"
+        and payload.get("direction_id") == anchor.get("direction_id")
+        and payload.get("problem_path") == anchor.get("problem_path")
+        and payload.get("problem_id") == anchor.get("problem_id")
+        and payload.get("method_cluster_id") == anchor.get("method_cluster_id")
+        and payload.get("falsifiable_prediction")
+        == anchor.get("falsifiable_prediction")
+        and simple_combination_counterfactual_complete(
+            payload.get("simple_combination_counterfactual")
+        )
+        and not payload.get("legacy_method_counterfactual_unscoped")
     )
 
 
@@ -834,6 +919,10 @@ def paper_assessment_complete(assessment: Any) -> bool:
     ):
         return False
     if not adopted_datasets_complete(assessment.get("adopted_datasets")):
+        return False
+    if not problem_path_complete(
+        assessment.get("problem_path"), assessment.get("problem_id")
+    ):
         return False
     if not isinstance(assessment.get("baseline_roster_revision"), int) or assessment[
         "baseline_roster_revision"
@@ -931,6 +1020,100 @@ def empty_monitoring() -> dict[str, Any]:
     }
 
 
+def empty_research_window() -> dict[str, Any]:
+    """Return the non-authoritative current-run reporting cache.
+
+    The sequence survives window replacement, but prior cards do not.  This is
+    deliberately not an experiment history or a scientific checkpoint.
+    """
+
+    return {
+        "sequence": 0,
+        "id": None,
+        "status": "NOT_STARTED",
+        "started_at": None,
+        "instruction": None,
+        "start_snapshot": None,
+        "revision": 0,
+        "cards": [],
+        "current_focus": None,
+    }
+
+
+def validate_research_window_state(window: Any) -> None:
+    if not isinstance(window, dict):
+        raise SystemExit("Invalid research_window: expected an object")
+    for field in ("sequence", "revision"):
+        value = window.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SystemExit(f"Invalid research_window.{field}: expected a non-negative integer")
+    if window.get("status") not in {"NOT_STARTED", "ACTIVE"}:
+        raise SystemExit("Invalid research_window.status")
+    cards = window.get("cards")
+    if not isinstance(cards, list):
+        raise SystemExit("Invalid research_window.cards: expected a list")
+    if window.get("status") == "ACTIVE" and not all(
+        nonblank(window.get(field)) for field in ("id", "started_at", "instruction")
+    ):
+        raise SystemExit("An active research window requires id, started_at, and instruction")
+    seen: set[tuple[str, str, str]] = set()
+    required_card_fields = (
+        "layer",
+        "kind",
+        "subject_id",
+        "title",
+        "status",
+        "verified_observation",
+        "interpretation",
+        "external_baseline_gap",
+        "next_action",
+        "first_recorded_at",
+        "updated_at",
+    )
+    for card in cards:
+        if not isinstance(card, dict):
+            raise SystemExit("Invalid research_window card: expected an object")
+        if any(not nonblank(card.get(field)) for field in required_card_fields):
+            raise SystemExit("Invalid research_window card: required text field is blank")
+        layer = str(card["layer"])
+        kind = str(card["kind"])
+        if layer not in WINDOW_CARD_KINDS_BY_LAYER or kind not in WINDOW_CARD_KINDS_BY_LAYER[layer]:
+            raise SystemExit("Research-window cards may contain only supported L1/L2 scientific kinds")
+        if card.get("status") not in WINDOW_CARD_STATUSES:
+            raise SystemExit("Invalid research_window card status")
+        key = (layer, kind, str(card["subject_id"]))
+        if key in seen:
+            raise SystemExit("Duplicate research_window card identity")
+        seen.add(key)
+        if "problem_path" in card:
+            if layer != "L2" or kind != "problem":
+                raise SystemExit("Only an L2 problem card may carry a problem_path")
+            normalize_problem_path(
+                card.get("problem_path"),
+                active_leaf=str(card["subject_id"]),
+                label="research-window problem path",
+            )
+    focus = window.get("current_focus")
+    if focus is not None:
+        if not isinstance(focus, dict):
+            raise SystemExit("Invalid research_window.current_focus")
+        for field in (
+            "layer",
+            "kind",
+            "subject_id",
+            "hypothesis",
+            "current_action",
+            "latest_result",
+            "next_action",
+            "updated_at",
+        ):
+            if not nonblank(focus.get(field)):
+                raise SystemExit(f"Invalid research_window.current_focus.{field}")
+        key = (str(focus["layer"]), str(focus["kind"]), str(focus["subject_id"]))
+        if key not in seen:
+            raise SystemExit("research_window.current_focus must reference an existing card")
+
+
 def initial_state(project: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -941,6 +1124,7 @@ def initial_state(project: str) -> dict[str, Any]:
         "manual_pause": None,
         "last_manual_pause_event": None,
         "monitoring": empty_monitoring(),
+        "research_window": empty_research_window(),
         "frozen_by_pi": {},
         "frozen_history": [],
         "layer_checkpoints": {
@@ -1380,6 +1564,55 @@ def migrate_state(state: dict[str, Any], version: int) -> dict[str, Any]:
                     }
                 )
                 state["layer_checkpoints"]["paper"] = empty_checkpoint()
+    if version in set(range(1, 14)):
+        # Pre-v14 projects have no trustworthy boundary for "since the PI last
+        # asked the agent to run".  Start empty rather than reconstructing or
+        # fabricating activity from jobs, notifications, or file timestamps.
+        state["research_window"] = empty_research_window()
+    if version in set(range(1, 15)):
+        science = state.setdefault("layer_checkpoints", {}).setdefault(
+            "science", empty_checkpoint()
+        )
+        payload = science.get("payload") if isinstance(science.get("payload"), dict) else {}
+        if nonblank(payload.get("problem_id")):
+            # The prior approved leaf is the only ancestry v14 can prove.  Do
+            # not invent broader motivation nodes during migration.
+            payload["problem_path"] = [str(payload["problem_id"])]
+            if not nonblank(payload.get("simple_combination_counterfactual")):
+                payload["legacy_method_counterfactual_unscoped"] = True
+            science["payload"] = payload
+            science["summary"] = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        anchor = state.get("evaluation_anchor")
+        if isinstance(anchor, dict):
+            anchor["legacy_scientific_scope_unscoped"] = True
+            invalidate_evaluation_anchor(
+                state,
+                "schema_v15_scientific_scope_upgrade",
+                "schema-v15-scientific-scope-relock",
+            )
+        if isinstance(state.get("paper_ready_assessment"), dict):
+            archive_invalidated_paper_assessment(
+                state,
+                "schema_v15_scientific_scope_upgrade",
+                "schema-v15-scientific-scope-relock",
+            )
+            if state.get("phase") in {
+                "paper_ready_pending_pi",
+                "paper_handoff_approved",
+            }:
+                state["phase"] = "confirmed_project"
+            paper = state["layer_checkpoints"].setdefault("paper", empty_checkpoint())
+            if paper.get("status") != "UNSET":
+                state.setdefault("checkpoint_history", []).append(
+                    {
+                        "layer": "paper",
+                        "previous": paper,
+                        "replacement_id": "schema-v15-scientific-scope-relock",
+                        "decision_source": {"type": "schema_v15_migration"},
+                        "created_at": now_iso(),
+                    }
+                )
+                state["layer_checkpoints"]["paper"] = empty_checkpoint()
     state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -1413,6 +1646,7 @@ def load_state(path: Path) -> dict[str, Any]:
         "instruction_maintenance": dict,
         "jobs": list,
         "monitoring": dict,
+        "research_window": dict,
         "invalidated_paper_assessments": list,
     }
     for key, expected_type in required_types.items():
@@ -1420,6 +1654,7 @@ def load_state(path: Path) -> dict[str, Any]:
             raise SystemExit(
                 f"Invalid state field {key!r}: expected {expected_type.__name__}"
             )
+    validate_research_window_state(state.get("research_window"))
     if state.get("evaluation_anchor") is not None and not isinstance(
         state.get("evaluation_anchor"), dict
     ):
@@ -1813,6 +2048,7 @@ def append_paper_assessment_receipt(record: Path, payload: dict[str, Any]) -> No
         )
         + "\n"
         f"- Problem in current work: {payload['current_work_problem']}\n"
+        f"- Active problem path: {' -> '.join(payload['problem_path'])}\n"
         f"- Problem ID: `{payload['problem_id']}`\n"
         f"- Method-cluster ID: `{payload['method_cluster_id']}`\n"
         f"- Innovation: {payload['innovation']}\n"
@@ -2061,6 +2297,7 @@ def update_record_placeholders(
             text,
             "L2 status: `ACTIVE_PI_CONFIRMED`  \n"
             f"Active checkpoint: `{checkpoint_id}`  \n"
+            f"Active problem path: {' -> '.join(payload['problem_path'])}  \n"
             f"Problem: {payload['problem']}  \n"
             f"Problem ID: `{payload['problem_id']}`  \n"
             f"Method-cluster ID: `{payload['method_cluster_id']}`  \n"
@@ -2068,6 +2305,8 @@ def update_record_placeholders(
             f"Paper-grade rationale: {payload['paper_grade_rationale']}  \n"
             f"Core mechanism: {payload['core_mechanism']}  \n"
             f"Falsifiable prediction: {payload['falsifiable_prediction']}  \n"
+            "Why a simple combination is insufficient: "
+            f"{payload['simple_combination_counterfactual']}  \n"
             f"Contribution type: `{payload['contribution_type']}`  \n"
             f"Innovation claim: {payload['innovation_claim']}  \n"
             f"User decision: {source['decision']}  \n"
@@ -2147,13 +2386,14 @@ def ensure_l2_scaffold(state_path: Path, direction_id: str, payload: dict[str, A
             "## Dataset-indexed external-baseline roster\n\n"
             "| dataset | role | strongest recent top-conference baseline | venue/year | source/search scope | protocol evidence/status | comparison-role coverage/blockers | metric/scale | baseline result | our matched result | row status |\n"
             "|---|---|---|---|---|---|---|---|---|---|---|\n\n"
-            "## Paper-grade problem portfolio\n\n"
-            "| problem ID | status | nearest-work cluster | shared unresolved problem | scientific value | failure evidence | paper-grade rationale | active/next action |\n"
-            "|---|---|---|---|---|---|---|---|\n\n"
+            "## Active problem path and alternatives\n\n"
+            "Record only the unresolved path from the confirmed L1 scope to the deepest defensible active leaf. One node is valid; do not fabricate fixed or irrelevant ancestors.\n\n"
+            "| path position | problem ID | parent problem ID | status | nearest-work cluster | unresolved problem | scientific value | failure evidence | paper-grade rationale | active/next action |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n\n"
             "Engineering bugs, runtime performance, data plumbing, and routine implementation repairs belong in L3 and must not be promoted into this table.\n\n"
             "## Problem-linked method clusters\n\n"
-            "| problem ID | cluster ID | status | shared intuition | mathematical mechanism | falsifiable prediction | representative evidence | external-baseline gap | next action |\n"
-            "|---|---|---|---|---|---|---|---|---|\n\n"
+            "| active leaf problem ID | cluster ID | status | shared intuition | mathematical mechanism | simple-combination counterfactual | falsifiable prediction | representative evidence | external-baseline gap | next action |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n\n"
             "Weighted expert voting, heuristic fusion, module stacking, threshold tricks, and similar engineering combinations may appear as baselines or L3 tools, not as the L2 core contribution.\n\n"
             "## Active problem-to-method chain\n\nUNSET\n\n"
             "## Decision-relevant results\n\nUNSET\n\n"
@@ -2198,6 +2438,323 @@ def require_execution_active(state: dict[str, Any], action: str) -> None:
         raise SystemExit(
             f"Cannot {action}: the PI manually paused execution; use resume after a direct PI instruction"
         )
+
+
+def research_window_active(state: dict[str, Any]) -> bool:
+    window = state.get("research_window") or {}
+    return window.get("status") == "ACTIVE" and nonblank(window.get("id"))
+
+
+def research_window_start_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    roster = state.get("dataset_baseline_roster") or {}
+    anchor = state.get("evaluation_anchor") or {}
+    return {
+        "phase": state.get("phase"),
+        "checkpoints": {
+            layer: {
+                "id": (state.get("layer_checkpoints") or {}).get(layer, {}).get("id"),
+                "status": (state.get("layer_checkpoints") or {}).get(layer, {}).get("status"),
+            }
+            for layer in CHECKPOINT_LAYERS
+        },
+        "baseline_roster_revision": roster.get("revision"),
+        "baseline_roster_payload_sha256": roster.get("payload_sha256"),
+        "evaluation_anchor_revision": anchor.get("revision"),
+    }
+
+
+def normalize_window_subject_id(value: Any) -> str:
+    subject_id = str(value or "").strip()
+    if not subject_id:
+        raise SystemExit("A research-window card requires a non-empty subject ID")
+    if len(subject_id) > 160:
+        raise SystemExit("A research-window subject ID must be at most 160 characters")
+    return subject_id
+
+
+def upsert_research_window_card(
+    state: dict[str, Any],
+    *,
+    layer: str,
+    kind: str,
+    subject_id: str,
+    title: str,
+    status: str,
+    verified_observation: str,
+    interpretation: str,
+    external_baseline_gap: str,
+    next_action: str,
+    starting_result: str | None = None,
+    best_result: str | None = None,
+    latest_result: str | None = None,
+    disposition_reason: str | None = None,
+    problem_path: list[str] | None = None,
+    focus: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Upsert one macro L1/L2 card in the active, replace-on-start cache."""
+
+    if not research_window_active(state):
+        return None
+    if layer not in WINDOW_CARD_KINDS_BY_LAYER or kind not in WINDOW_CARD_KINDS_BY_LAYER[layer]:
+        raise SystemExit("Research-window cards support only L1/L2 scientific kinds; L3 is internal")
+    if status not in WINDOW_CARD_STATUSES:
+        raise SystemExit(
+            "Research-window card status must be one of: "
+            + ", ".join(sorted(WINDOW_CARD_STATUSES))
+        )
+    subject_id = normalize_window_subject_id(subject_id)
+    required_values = {
+        "title": title,
+        "verified_observation": verified_observation,
+        "interpretation": interpretation,
+        "external_baseline_gap": external_baseline_gap,
+        "next_action": next_action,
+    }
+    cleaned = {
+        name: clean_text(value, f"research-window {name.replace('_', ' ')}")
+        for name, value in required_values.items()
+    }
+    window = state["research_window"]
+    key = (layer, kind, subject_id)
+    existing = next(
+        (
+            card
+            for card in window["cards"]
+            if (card.get("layer"), card.get("kind"), card.get("subject_id")) == key
+        ),
+        None,
+    )
+    timestamp = now_iso()
+    card = {
+        "layer": layer,
+        "kind": kind,
+        "subject_id": subject_id,
+        "title": cleaned["title"],
+        "status": status,
+        "verified_observation": cleaned["verified_observation"],
+        "interpretation": cleaned["interpretation"],
+        "external_baseline_gap": cleaned["external_baseline_gap"],
+        "next_action": cleaned["next_action"],
+        "first_recorded_at": (
+            existing.get("first_recorded_at") if isinstance(existing, dict) else timestamp
+        ),
+        "updated_at": timestamp,
+    }
+    if problem_path is not None:
+        if layer != "L2" or kind != "problem":
+            raise SystemExit("--problem-path is valid only for an L2 problem card")
+        card["problem_path"] = normalize_problem_path(
+            problem_path,
+            active_leaf=subject_id,
+            label="research-window problem path",
+        )
+    elif isinstance(existing, dict) and isinstance(existing.get("problem_path"), list):
+        card["problem_path"] = list(existing["problem_path"])
+    for name, value in (
+        ("starting_result", starting_result),
+        ("best_result", best_result),
+        ("latest_result", latest_result),
+        ("disposition_reason", disposition_reason),
+    ):
+        if nonblank(value):
+            card[name] = str(value).strip()
+        elif isinstance(existing, dict) and nonblank(existing.get(name)):
+            card[name] = str(existing.get(name)).strip()
+    if existing is None:
+        window["cards"].append(card)
+    else:
+        existing.clear()
+        existing.update(card)
+        card = existing
+    window["revision"] = int(window.get("revision") or 0) + 1
+    current = window.get("current_focus")
+    if status in WINDOW_TERMINAL_STATUSES and isinstance(current, dict) and (
+        current.get("layer"), current.get("kind"), current.get("subject_id")
+    ) == key:
+        window["current_focus"] = None
+    if focus is not None:
+        focus_values = {
+            "hypothesis": clean_text(focus.get("hypothesis"), "current-focus hypothesis"),
+            "current_action": clean_text(
+                focus.get("current_action"), "current-focus current action"
+            ),
+            "latest_result": clean_text(
+                focus.get("latest_result"), "current-focus latest result"
+            ),
+            "next_action": clean_text(focus.get("next_action"), "current-focus next action"),
+        }
+        window["current_focus"] = {
+            "layer": layer,
+            "kind": kind,
+            "subject_id": subject_id,
+            **focus_values,
+            "updated_at": timestamp,
+        }
+    return card
+
+
+def baseline_gap_summary(row: dict[str, Any]) -> str:
+    baseline = row.get("baseline_score")
+    ours = row.get("our_score")
+    if finite_number(baseline) and finite_number(ours):
+        gain = float(ours) - float(baseline)
+        unit = "points on 0-100 scale" if row.get("metric_scale") == "percentage" else "raw on 0-1 scale"
+        return f"ours-baseline={gain:+.6g} {unit}; protocol={row.get('protocol_status')}"
+    return (
+        f"status={row.get('status')}; protocol={row.get('protocol_status')}; "
+        "matched numeric gap not yet available"
+    )
+
+
+def sync_baseline_roster_to_window(state: dict[str, Any], roster: dict[str, Any]) -> None:
+    if not research_window_active(state):
+        return
+    for row in roster.get("rows") or []:
+        dataset = str(row.get("dataset") or "UNSET")
+        upsert_research_window_card(
+            state,
+            layer="L2",
+            kind="baseline_comparison",
+            subject_id=f"dataset:{dataset}",
+            title=f"External comparison for {dataset}",
+            status=str(row.get("status") or "IDENTIFIED"),
+            verified_observation=(
+                f"Comparator={row.get('baseline')}; venue/year={row.get('venue_year')}; "
+                f"metric={row.get('metric')} ({row.get('metric_scale')}); "
+                f"baseline={row.get('baseline_score')}; ours={row.get('our_score')}"
+            ),
+            interpretation=(
+                "This is the current dataset-specific external comparison receipt; "
+                "scientific comparability remains governed by the baseline roster."
+            ),
+            external_baseline_gap=baseline_gap_summary(row),
+            next_action=(
+                "Complete or recheck the protocol-matched comparison"
+                if row.get("status") != "MATCHED"
+                else "Use this row only with its verified protocol evidence"
+            ),
+            latest_result=(
+                f"baseline={row.get('baseline_score')}; ours={row.get('our_score')}"
+                if finite_number(row.get("baseline_score")) and finite_number(row.get("our_score"))
+                else None
+            ),
+        )
+
+
+def sync_checkpoint_to_window(
+    state: dict[str, Any], layer: str, checkpoint_id: str, payload: dict[str, Any]
+) -> None:
+    if not research_window_active(state):
+        return
+    if layer == "direction":
+        adopted = payload.get("adopted_datasets") or []
+        dataset_names = ", ".join(str(item.get("dataset")) for item in adopted) or str(
+            payload.get("dataset")
+        )
+        upsert_research_window_card(
+            state,
+            layer="L1",
+            kind="task_dataset",
+            subject_id=checkpoint_id,
+            title=f"{payload.get('task_type')} on {dataset_names}",
+            status="SELECTED",
+            verified_observation="The PI confirmed this L1 task-dataset direction.",
+            interpretation=(
+                f"Competitive bar={((payload.get('evidence_standard') or {}).get('competitive_bar'))}; "
+                f"generalization={((payload.get('evidence_standard') or {}).get('generalization_requirement'))}."
+            ),
+            external_baseline_gap="See the dataset-indexed baseline roster; it may not yet be complete.",
+            next_action="Map paper-grade nearest-work problems and source-check external baselines.",
+            focus={
+                "hypothesis": "The selected task-data direction contains a paper-grade unresolved problem.",
+                "current_action": "Map nearest-work problems and dataset-specific external baselines.",
+                "latest_result": "L1 direction confirmed; L2 evidence is not yet established.",
+                "next_action": "Screen problem-linked method clusters inside the confirmed direction.",
+            },
+        )
+    elif layer == "science":
+        problem_id = str(payload.get("problem_id"))
+        method_id = str(payload.get("method_cluster_id"))
+        common_gap = str(payload.get("external_baseline_status"))
+        upsert_research_window_card(
+            state,
+            layer="L2",
+            kind="problem",
+            subject_id=problem_id,
+            title=str(payload.get("problem")),
+            status="SELECTED",
+            verified_observation=str(payload.get("nearest_work_gap")),
+            interpretation=str(payload.get("paper_grade_rationale")),
+            external_baseline_gap=common_gap,
+            next_action="Complete evidence for the confirmed problem and its contribution boundary.",
+            latest_result=str(payload.get("ceiling_summary")),
+            problem_path=list(payload.get("problem_path") or []),
+        )
+        upsert_research_window_card(
+            state,
+            layer="L2",
+            kind="method_cluster",
+            subject_id=method_id,
+            title=str(payload.get("core_mechanism")),
+            status="SELECTED",
+            verified_observation=str(payload.get("ceiling_summary")),
+            interpretation=str(payload.get("innovation_claim")),
+            external_baseline_gap=common_gap,
+            next_action="Complete matched evidence against every adopted dataset baseline.",
+            latest_result=str(payload.get("ceiling_summary")),
+            focus={
+                "hypothesis": str(payload.get("falsifiable_prediction")),
+                "current_action": "Complete the confirmed mechanism's decision-relevant evidence.",
+                "latest_result": str(payload.get("ceiling_summary")),
+                "next_action": "Assess the confirmed story against the L1 evidence standard.",
+            },
+        )
+
+
+def sync_scientific_switch_to_window(
+    state: dict[str, Any], kind: str, text: str, to_id: str
+) -> None:
+    if not research_window_active(state):
+        return
+    card_kind = "problem" if kind == "problem_switch" else "method_cluster"
+    upsert_research_window_card(
+        state,
+        layer="L2",
+        kind=card_kind,
+        subject_id=to_id,
+        title=f"New {card_kind.replace('_', ' ')} {to_id}",
+        status="CURRENT",
+        verified_observation=text,
+        interpretation=(
+            "The scientific branch changed. Record its hypothesis and representative "
+            "evidence before the next scientific action."
+        ),
+        external_baseline_gap="Not yet recorded for this new branch.",
+        next_action="Update this card with its macro hypothesis, evidence, and external comparison.",
+    )
+
+
+def start_research_window_state(state: dict[str, Any], instruction: Any) -> dict[str, Any]:
+    require_execution_active(state, "start a research execution window")
+    if state.get("phase") == "discussion":
+        raise SystemExit(
+            "Cannot start a research window in discussion; confirm the research compass first"
+        )
+    instruction_text = clean_text(instruction, "research-window instruction")
+    previous = state.get("research_window") or empty_research_window()
+    sequence = int(previous.get("sequence") or 0) + 1
+    state["research_window"] = {
+        "sequence": sequence,
+        "id": f"W{sequence:03d}",
+        "status": "ACTIVE",
+        "started_at": now_iso(),
+        "instruction": instruction_text,
+        "start_snapshot": research_window_start_snapshot(state),
+        "revision": 1,
+        "cards": [],
+        "current_focus": None,
+    }
+    return state["research_window"]
 
 
 def next_id(items: list[dict[str, Any]], prefix: str) -> str:
@@ -2351,6 +2908,12 @@ def checkpoint_complete(state: dict[str, Any], layer: str) -> bool:
         ] < MIN_PAPER_READY_GAIN_POINTS:
             return False
     if layer == "science":
+        if not problem_path_complete(payload.get("problem_path"), payload.get("problem_id")):
+            return False
+        if not simple_combination_counterfactual_complete(
+            payload.get("simple_combination_counterfactual")
+        ) and not payload.get("legacy_method_counterfactual_unscoped"):
+            return False
         if payload.get("contribution_type") not in PAPER_GRADE_CONTRIBUTION_TYPES:
             return False
         evidence_refs = payload.get("evidence_refs")
@@ -2480,12 +3043,14 @@ def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bo
         or assessment.get("adopted_datasets")
         != direction_payload.get("adopted_datasets")
         or assessment.get("current_work_problem") != science_payload.get("problem")
+        or assessment.get("problem_path") != science_payload.get("problem_path")
         or assessment.get("problem_id") != science_payload.get("problem_id")
         or assessment.get("method_cluster_id")
         != science_payload.get("method_cluster_id")
         or assessment.get("innovation") != science_payload.get("innovation_claim")
         or assessment.get("core_mechanism") != science_payload.get("core_mechanism")
         or not evaluation_anchor_usable(state)
+        or not science_matches_evaluation_anchor(state)
         or assessment.get("evaluation_anchor_revision") != anchor.get("revision")
         or assessment.get("primary_metric") != anchor.get("primary_metric")
         or assessment.get("metric_scale") != anchor.get("metric_scale")
@@ -2550,7 +3115,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         add(
             "EVALUATION_ANCHOR_INCOMPLETE",
             "P0",
-            "The evaluation anchor must contain a direction, primary metric, scale, directionality, revision, reason, and lock time",
+            "The evaluation anchor must contain a direction, ordered problem path, active leaf, method cluster, falsifiable prediction, primary metric, scale, directionality, revision, reason, and lock time",
         )
     elif anchor is not None and anchor.get("legacy_derived"):
         add(
@@ -2718,6 +3283,41 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
     science = state["layer_checkpoints"].get("science", {})
     paper = state["layer_checkpoints"].get("paper", {})
     if science.get("status") == "CONFIRMED_BY_PI":
+        science_payload = science.get("payload") or {}
+        if not problem_path_complete(
+            science_payload.get("problem_path"), science_payload.get("problem_id")
+        ):
+            add(
+                "SCIENCE_PROBLEM_PATH_INVALID",
+                "P0",
+                "Confirmed L2 science requires an ordered problem path ending at the active problem ID",
+            )
+        if science_payload.get(
+            "legacy_method_counterfactual_unscoped"
+        ) or not simple_combination_counterfactual_complete(
+            science_payload.get("simple_combination_counterfactual")
+        ):
+            add(
+                "SCIENCE_SIMPLE_COMBINATION_AUDIT_REQUIRED",
+                (
+                    "P0"
+                    if state.get("phase")
+                    in {"paper_ready_pending_pi", "paper_handoff_approved"}
+                    else "P1"
+                ),
+                "The migrated L2 method still needs an agent-owned audit explaining why an ordinary combination cannot solve the active leaf",
+            )
+        if (
+            state.get("phase")
+            in {"paper_ready_pending_pi", "paper_handoff_approved"}
+            and evaluation_anchor_usable(state)
+            and not science_matches_evaluation_anchor(state)
+        ):
+            add(
+                "SCIENCE_EVALUATION_ANCHOR_SCOPE_MISMATCH",
+                "P0",
+                "The current experimental anchor targets a different problem path, leaf, method cluster, or falsifiable prediction than the confirmed L2 story",
+            )
         if not baseline_roster_usable(state) or not baseline_roster_record_usable(
             state_path, state
         ):
@@ -2794,6 +3394,7 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
         or assessment.get("adopted_datasets")
         != direction_payload.get("adopted_datasets")
         or assessment.get("current_work_problem") != science_payload.get("problem")
+        or assessment.get("problem_path") != science_payload.get("problem_path")
         or assessment.get("problem_id") != science_payload.get("problem_id")
         or assessment.get("method_cluster_id")
         != science_payload.get("method_cluster_id")
@@ -3280,6 +3881,7 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
         "manual_pause": state.get("manual_pause"),
         "last_manual_pause_event": state.get("last_manual_pause_event"),
         "monitoring": state.get("monitoring"),
+        "research_window": state.get("research_window"),
         "pending_macro_count": len(pending),
         "pending_macro_questions": pending,
         "deferred_pi_count": len(deferred),
@@ -3334,6 +3936,128 @@ def state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def window_status_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Return the macro-only user supervision view for the current run window."""
+
+    window = state.get("research_window") or empty_research_window()
+    active = research_window_active(state)
+    direction = (state.get("layer_checkpoints") or {}).get("direction") or {}
+    science = (state.get("layer_checkpoints") or {}).get("science") or {}
+    direction_payload = direction.get("payload") or {}
+    science_payload = science.get("payload") or {}
+    roster = state.get("dataset_baseline_roster") or {}
+    anchor = state.get("evaluation_anchor") or {}
+    macro_notifications = [
+        item
+        for item in state.get("notifications", [])
+        if (
+            active
+            and isinstance(item, dict)
+            and item.get("kind") in WINDOW_MACRO_NOTIFICATION_KINDS
+            and timestamp_at_or_after(item.get("created_at"), window.get("started_at"))
+        )
+    ][-5:]
+    pending_questions = [
+        {
+            "id": item.get("id"),
+            "layer": item.get("layer"),
+            "decision_target": item.get("decision_target"),
+            "text": item.get("text"),
+            "recommendation": item.get("recommendation"),
+        }
+        for item in active_questions(state)
+    ]
+    deferred = [
+        {
+            "id": item.get("id"),
+            "layer": item.get("layer"),
+            "decision_target": item.get("decision_target"),
+            "text": item.get("text"),
+            "revisit_condition": item.get("revisit_condition"),
+        }
+        for item in deferred_questions(state)
+    ]
+    cards = window.get("cards") or []
+    return {
+        "schema_version": state.get("schema_version"),
+        "project": state.get("project"),
+        "phase": state.get("phase"),
+        "status": state.get("status"),
+        "window_availability": "ACTIVE" if active else "NOT_RECORDED",
+        "missing_window_notice": (
+            None
+            if active
+            else (
+                "No trustworthy since-last-run window exists. Report only the current "
+                "verified L1/L2 state; do not reconstruct activity from L3 jobs or logs."
+            )
+        ),
+        "research_window": {
+            "id": window.get("id"),
+            "started_at": window.get("started_at"),
+            "instruction": window.get("instruction"),
+            "revision": window.get("revision"),
+            "start_snapshot": window.get("start_snapshot"),
+            "l1_cards": [card for card in cards if card.get("layer") == "L1"],
+            "l2_cards": [card for card in cards if card.get("layer") == "L2"],
+            "current_focus": window.get("current_focus"),
+        },
+        "current_l1": {
+            "id": direction.get("id"),
+            "status": direction.get("status"),
+            "task_type": direction_payload.get("task_type"),
+            "dataset": direction_payload.get("dataset"),
+            "adopted_datasets": direction_payload.get("adopted_datasets"),
+            "evidence_standard": direction_payload.get("evidence_standard"),
+        },
+        "current_l2": {
+            "id": science.get("id"),
+            "status": science.get("status"),
+            "problem_path": science_payload.get("problem_path"),
+            "problem_id": science_payload.get("problem_id"),
+            "problem": science_payload.get("problem"),
+            "method_cluster_id": science_payload.get("method_cluster_id"),
+            "core_mechanism": science_payload.get("core_mechanism"),
+            "falsifiable_prediction": science_payload.get("falsifiable_prediction"),
+            "innovation_claim": science_payload.get("innovation_claim"),
+            "simple_combination_counterfactual": science_payload.get(
+                "simple_combination_counterfactual"
+            ),
+            "ceiling_summary": science_payload.get("ceiling_summary"),
+        },
+        "evaluation_anchor": {
+            "revision": anchor.get("revision"),
+            "problem_path": anchor.get("problem_path"),
+            "problem_id": anchor.get("problem_id"),
+            "method_cluster_id": anchor.get("method_cluster_id"),
+            "falsifiable_prediction": anchor.get("falsifiable_prediction"),
+            "primary_metric": anchor.get("primary_metric"),
+            "metric_scale": anchor.get("metric_scale"),
+            "metric_direction": anchor.get("metric_direction"),
+        },
+        "current_external_baselines": [
+            {
+                "dataset": row.get("dataset"),
+                "role": row.get("role"),
+                "baseline": row.get("baseline"),
+                "venue_year": row.get("venue_year"),
+                "metric": row.get("metric"),
+                "metric_scale": row.get("metric_scale"),
+                "baseline_score": row.get("baseline_score"),
+                "our_score": row.get("our_score"),
+                "status": row.get("status"),
+                "protocol_status": row.get("protocol_status"),
+                "gap": baseline_gap_summary(row),
+            }
+            for row in roster.get("rows") or []
+        ],
+        "macro_notifications": macro_notifications,
+        "pending_pi_questions": pending_questions,
+        "deferred_pi_questions": deferred,
+        "updated_at": state.get("updated_at"),
+    }
+
+
 def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, Any]:
     pending = active_questions(state)
     pending_ages = [
@@ -3371,7 +4095,8 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
             item
             for item in reversed(state.get("notifications", []))
             if isinstance(item, dict)
-            and item.get("kind") in {"problem_switch", "method_cluster_switch"}
+            and item.get("kind")
+            in {"problem_switch", "problem_path_change", "method_cluster_switch"}
         ),
         None,
     )
@@ -3387,6 +4112,10 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
     wakeup_signal = {
         "phase": state["phase"],
         "status": state["status"],
+        "research_window": {
+            "id": (state.get("research_window") or {}).get("id"),
+            "revision": (state.get("research_window") or {}).get("revision"),
+        },
         "checkpoint_payloads": {
             layer: {
                 "id": state["layer_checkpoints"][layer].get("id"),
@@ -3465,6 +4194,10 @@ def compact_state_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
         "any_pending_over_20_minutes": any_pending_over_20_minutes,
         "deferred_pi_count": len(deferred_questions(state)),
         "checkpoint_status": checkpoint_status,
+        "research_window_id": (state.get("research_window") or {}).get("id"),
+        "research_window_revision": (state.get("research_window") or {}).get(
+            "revision"
+        ),
         "evaluation_anchor_revision": (
             (state.get("evaluation_anchor") or {}).get("revision")
         ),
@@ -3552,6 +4285,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             "record_sha256_at_confirmation": digest,
         }
         state["phase"] = "exploration"
+        start_research_window_state(state, pi_decision)
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
 
@@ -3559,8 +4293,71 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
-    summary = compact_state_summary(path, state) if args.compact else state_summary(path, state)
+    if args.window:
+        summary = window_status_summary(path, state)
+    elif args.compact:
+        summary = compact_state_summary(path, state)
+    else:
+        summary = state_summary(path, state)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def cmd_window_start(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    start_research_window_state(state, args.instruction)
+    save_state(path, state)
+    print(json.dumps(window_status_summary(path, state), ensure_ascii=False, indent=2))
+
+
+def cmd_window_note(args: argparse.Namespace) -> None:
+    path = Path(args.state)
+    state = load_state(path)
+    if not research_window_active(state):
+        raise SystemExit(
+            "No active research window; use window-start after an explicit PI run instruction"
+        )
+    focus = None
+    if args.set_current:
+        focus = {
+            "hypothesis": args.hypothesis,
+            "current_action": args.current_action,
+            "latest_result": args.focus_latest_result or args.latest_result or args.verified_observation,
+            "next_action": args.next_action,
+        }
+    elif any(
+        value is not None
+        for value in (args.hypothesis, args.current_action, args.focus_latest_result)
+    ):
+        raise SystemExit(
+            "--hypothesis, --current-action, and --focus-latest-result require --set-current"
+        )
+    card = upsert_research_window_card(
+        state,
+        layer=args.layer,
+        kind=args.kind,
+        subject_id=args.subject_id,
+        title=args.title,
+        status=args.status,
+        verified_observation=args.verified_observation,
+        interpretation=args.interpretation,
+        external_baseline_gap=args.external_baseline_gap,
+        next_action=args.next_action,
+        starting_result=args.starting_result,
+        best_result=args.best_result,
+        latest_result=args.latest_result,
+        disposition_reason=args.disposition_reason,
+        problem_path=args.problem_path,
+        focus=focus,
+    )
+    save_state(path, state)
+    print(
+        json.dumps(
+            {"updated_card": card, "window": window_status_summary(path, state)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 def cmd_monitor_ack(args: argparse.Namespace) -> None:
@@ -3940,6 +4737,8 @@ def append_notification(
             "to_id": next_id_value,
         }
     state["notifications"].append(notification)
+    if kind in {"problem_switch", "method_cluster_switch"}:
+        sync_scientific_switch_to_window(state, kind, text, notification["transition"]["to_id"])
     compact_recent_notifications(state)
     return notification
 
@@ -4659,6 +5458,7 @@ def checkpoint_payload(
             "paper_grade_rationale": args.paper_grade_rationale,
             "core_mechanism": args.core_mechanism,
             "falsifiable_prediction": args.falsifiable_prediction,
+            "simple_combination_counterfactual": args.simple_combination_counterfactual,
             "contribution_type": args.contribution_type,
             "innovation_claim": args.innovation_claim,
             "external_baseline_status": args.external_baseline_status,
@@ -4681,6 +5481,11 @@ def checkpoint_payload(
             )
         required = {key: str(value).strip() for key, value in required.items()}
         required["problem_id"] = validate_checkpoint_id(required["problem_id"])
+        required["problem_path"] = normalize_problem_path(
+            args.problem_path,
+            active_leaf=required["problem_id"],
+            label="--problem-path",
+        )
         required["method_cluster_id"] = validate_checkpoint_id(
             required["method_cluster_id"]
         )
@@ -4706,6 +5511,23 @@ def checkpoint_payload(
             )
         if required["direction_id"] != direction.get("id"):
             raise SystemExit("--direction-id must match the active confirmed direction")
+        anchor = state.get("evaluation_anchor") or {}
+        if not evaluation_anchor_usable(state):
+            raise SystemExit(
+                "Cannot confirm science before a scientific-scope evaluation anchor is "
+                "locked for this candidate before broad tuning"
+            )
+        for field in (
+            "problem_path",
+            "problem_id",
+            "method_cluster_id",
+            "falsifiable_prediction",
+        ):
+            if required.get(field) != anchor.get(field):
+                raise SystemExit(
+                    "L2 confirmation must match the current pre-tuning evaluation anchor "
+                    f"for {field}; replace the anchor or confirm the anchored candidate"
+                )
         required["evidence_refs"] = {
             "problem_portfolio": evidence_reference(
                 state_path, args.problem_portfolio_record, "problem_portfolio_record"
@@ -4905,6 +5727,7 @@ def cmd_baseline_roster(args: argparse.Namespace) -> None:
     append_baseline_roster_receipt(record, roster, reason)
     roster["record_sha256_at_receipt"] = sha256_file(record)
     state["dataset_baseline_roster"] = roster
+    sync_baseline_roster_to_window(state, roster)
     archive_invalidated_paper_assessment(
         state, "dataset_baseline_roster_change", f"baseline-roster-r{revision}"
     )
@@ -4988,14 +5811,24 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         )
     primary_metric = str(args.primary_metric or "").strip()
     reason = str(args.reason or "").strip()
-    if not primary_metric or not reason:
+    problem_id = validate_checkpoint_id(args.problem_id)
+    method_cluster_id = validate_checkpoint_id(args.method_cluster_id)
+    problem_path = normalize_problem_path(
+        args.problem_path, active_leaf=problem_id, label="--problem-path"
+    )
+    falsifiable_prediction = str(args.falsifiable_prediction or "").strip()
+    if not primary_metric or not reason or not falsifiable_prediction:
         raise SystemExit(
-            "Evaluation anchoring requires non-empty --primary-metric and --reason"
+            "Evaluation anchoring requires a non-empty metric, reason, and falsifiable prediction"
         )
     direction_id = state["layer_checkpoints"]["direction"].get("id")
     current = state.get("evaluation_anchor")
     identity = {
         "direction_id": direction_id,
+        "problem_path": problem_path,
+        "problem_id": problem_id,
+        "method_cluster_id": method_cluster_id,
+        "falsifiable_prediction": falsifiable_prediction,
         "primary_metric": primary_metric,
         "metric_scale": args.metric_scale,
         "metric_direction": args.metric_direction,
@@ -5006,6 +5839,68 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         and all(current.get(key) == value for key, value in identity.items())
     ):
         raise SystemExit("Evaluation anchor is already set to these values")
+    science = state["layer_checkpoints"].get("science") or {}
+    science_payload = science.get("payload") or {}
+    legacy_enrichment_match = (
+        science.get("status") == "CONFIRMED_BY_PI"
+        and science_payload.get("legacy_method_counterfactual_unscoped")
+        and science_payload.get("direction_id") == identity["direction_id"]
+        and science_payload.get("problem_id") == identity["problem_id"]
+        and science_payload.get("method_cluster_id") == identity["method_cluster_id"]
+        and science_payload.get("falsifiable_prediction")
+        == identity["falsifiable_prediction"]
+    )
+    if args.legacy_simple_combination_counterfactual is not None and not legacy_enrichment_match:
+        raise SystemExit(
+            "--legacy-simple-combination-counterfactual is valid only when relocking "
+            "the exact migrated L2 leaf, method cluster, and falsifiable prediction"
+        )
+    if legacy_enrichment_match:
+        counterfactual = clean_text(
+            args.legacy_simple_combination_counterfactual,
+            "--legacy-simple-combination-counterfactual",
+        )
+        science_payload["problem_path"] = list(problem_path)
+        science_payload["simple_combination_counterfactual"] = counterfactual
+        science_payload.pop("legacy_method_counterfactual_unscoped", None)
+        science["payload"] = science_payload
+        science["summary"] = json.dumps(
+            science_payload, ensure_ascii=False, sort_keys=True
+        )
+        record = resolve_stored_path(path, science.get("record_path"))
+        if (
+            record is None
+            or not record.is_file()
+            or not stored_path_is_project_local(path, science.get("record_path"))
+        ):
+            raise SystemExit(
+                "Cannot perform agent-owned legacy L2 enrichment because its durable record is unavailable"
+            )
+        update_record_placeholders(
+            record,
+            "science",
+            str(science.get("id")),
+            science_payload,
+            science.get("decision_source") or {"decision": "legacy PI decision"},
+        )
+        with record.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(
+                "\n\n## Schema-v15 scientific-scope normalization\n\n"
+                f"- Recorded at: {now_iso()}\n"
+                f"- Active problem path: {' -> '.join(problem_path)}\n"
+                "- Existing leaf, method cluster, falsifiable prediction, core mechanism, "
+                "contribution type, and innovation claim were not changed.\n"
+                f"- Simple-combination counterfactual: {counterfactual}\n"
+                "- This was an agent-owned meaning-preserving enrichment; any semantic "
+                "change requires the existing scoped PI decision path.\n"
+            )
+        science["record_sha256_at_confirmation"] = sha256_file(record)
+        append_notification(
+            state,
+            "旧版 L2 已补齐问题路径和‘为什么普通组合解决不了’的说明；"
+            "叶子问题、核心方法和创新点均未更换。",
+        )
+        sync_checkpoint_to_window(state, "science", str(science.get("id")), science_payload)
     revision = 1
     if isinstance(current, dict):
         revision = int(current.get("revision") or 0) + 1
@@ -5031,6 +5926,10 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         "reason": reason,
         "legacy_derived": False,
     }
+    if research_window_active(state):
+        state["research_window"]["revision"] = int(
+            state["research_window"].get("revision") or 0
+        ) + 1
     archive_invalidated_paper_assessment(
         state, "evaluation_anchor_change", f"evaluation-anchor-r{revision}"
     )
@@ -5053,7 +5952,8 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     if args.layer == "science" and previous.get("status") == "CONFIRMED_BY_PI":
         previous_payload = previous.get("payload") or {}
         science_problem_changed = (
-            previous_payload.get("problem_id") != payload.get("problem_id")
+            previous_payload.get("problem_path") != payload.get("problem_path")
+            or previous_payload.get("problem_id") != payload.get("problem_id")
             or previous_payload.get("problem") != payload.get("problem")
         )
         science_method_changed = (
@@ -5061,12 +5961,20 @@ def cmd_confirm(args: argparse.Namespace) -> None:
             != payload.get("method_cluster_id")
             or previous_payload.get("core_mechanism")
             != payload.get("core_mechanism")
+            or previous_payload.get("falsifiable_prediction")
+            != payload.get("falsifiable_prediction")
+            or previous_payload.get("simple_combination_counterfactual")
+            != payload.get("simple_combination_counterfactual")
+            or previous_payload.get("contribution_type")
+            != payload.get("contribution_type")
+            or previous_payload.get("innovation_claim")
+            != payload.get("innovation_claim")
         )
         if (science_problem_changed or science_method_changed) and not nonblank(
             args.change_notification
         ):
             raise SystemExit(
-                "Replacing the confirmed L2 problem or method cluster requires a "
+                "Replacing the confirmed L2 problem path, active leaf, or method cluster requires a "
                 "plain-language --change-notification for the PI"
             )
     if (
@@ -5141,15 +6049,26 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         invalidate_checkpoint(path, state, "paper", "science_change", args.id)
         archive_invalidated_paper_assessment(state, "science_change", args.id)
         if science_problem_changed:
-            append_notification(
-                state,
-                "L2 科学问题已更换："
-                f"`{(previous.get('payload') or {}).get('problem_id')}` → "
-                f"`{payload.get('problem_id')}`。{payload.get('change_notification')}",
-                "problem_switch",
-                from_id=(previous.get("payload") or {}).get("problem_id"),
-                to_id=payload.get("problem_id"),
-            )
+            previous_payload = previous.get("payload") or {}
+            if previous_payload.get("problem_id") != payload.get("problem_id"):
+                append_notification(
+                    state,
+                    "L2 活跃叶子问题已更换："
+                    f"`{previous_payload.get('problem_id')}` → "
+                    f"`{payload.get('problem_id')}`。{payload.get('change_notification')}",
+                    "problem_switch",
+                    from_id=previous_payload.get("problem_id"),
+                    to_id=payload.get("problem_id"),
+                )
+            else:
+                append_notification(
+                    state,
+                    "L2 问题路径已调整，但活跃叶子不变："
+                    f"{' -> '.join(previous_payload.get('problem_path') or [])} → "
+                    f"{' -> '.join(payload.get('problem_path') or [])}。"
+                    f"{payload.get('change_notification')}",
+                    "problem_path_change",
+                )
         if science_method_changed:
             append_notification(
                 state,
@@ -5163,6 +6082,8 @@ def cmd_confirm(args: argparse.Namespace) -> None:
         state["phase"] = "confirmed_project"
     elif args.layer == "paper":
         state["phase"] = "paper_handoff_approved"
+    if args.layer in {"direction", "science"}:
+        sync_checkpoint_to_window(state, args.layer, args.id, payload)
     refresh_pause(state)
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
@@ -5214,6 +6135,12 @@ def cmd_phase(args: argparse.Namespace) -> None:
             raise SystemExit(
                 "Entering paper-ready phase requires an evaluation anchor locked "
                 "before broad tuning"
+            )
+        if not science_matches_evaluation_anchor(state):
+            raise SystemExit(
+                "Entering paper-ready phase requires the confirmed L2 problem path, "
+                "active leaf, method cluster, and falsifiable prediction to match the "
+                "current pre-tuning evaluation anchor"
             )
         missing = [
             field
@@ -5306,6 +6233,7 @@ def cmd_phase(args: argparse.Namespace) -> None:
             "dataset": direction_payload["dataset"],
             "adopted_datasets": direction_payload["adopted_datasets"],
             "current_work_problem": science_payload["problem"],
+            "problem_path": science_payload["problem_path"],
             "problem_id": science_payload["problem_id"],
             "method_cluster_id": science_payload["method_cluster_id"],
             "innovation": science_payload["innovation_claim"],
@@ -5621,12 +6549,63 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="Show workflow state and control issues")
     status_parser.add_argument("state")
-    status_parser.add_argument(
+    status_mode = status_parser.add_mutually_exclusive_group()
+    status_mode.add_argument(
         "--compact",
         action="store_true",
         help="Show only wakeup-critical state, hashes, jobs, and issue codes",
     )
+    status_mode.add_argument(
+        "--window",
+        action="store_true",
+        help="Show the macro-only L1/L2 changes since the latest explicit PI run instruction",
+    )
     status_parser.set_defaults(func=cmd_status)
+
+    window_start_parser = subparsers.add_parser(
+        "window-start",
+        help="Replace the current reporting window after an explicit PI start/continue instruction",
+    )
+    window_start_parser.add_argument("state")
+    window_start_parser.add_argument(
+        "--instruction",
+        required=True,
+        help="Concise faithful summary of the PI instruction that started this execution window",
+    )
+    window_start_parser.set_defaults(func=cmd_window_start)
+
+    window_note_parser = subparsers.add_parser(
+        "window-note",
+        help="Upsert one macro L1/L2 attempt card in the current reporting window",
+    )
+    window_note_parser.add_argument("state")
+    window_note_parser.add_argument("--layer", required=True, choices=sorted(WINDOW_CARD_KINDS_BY_LAYER))
+    window_note_parser.add_argument(
+        "--kind",
+        required=True,
+        choices=sorted(set().union(*WINDOW_CARD_KINDS_BY_LAYER.values())),
+    )
+    window_note_parser.add_argument("--subject-id", required=True)
+    window_note_parser.add_argument("--title", required=True)
+    window_note_parser.add_argument("--status", required=True, choices=sorted(WINDOW_CARD_STATUSES))
+    window_note_parser.add_argument("--verified-observation", required=True)
+    window_note_parser.add_argument("--interpretation", required=True)
+    window_note_parser.add_argument("--external-baseline-gap", required=True)
+    window_note_parser.add_argument("--next-action", required=True)
+    window_note_parser.add_argument("--starting-result")
+    window_note_parser.add_argument("--best-result")
+    window_note_parser.add_argument("--latest-result")
+    window_note_parser.add_argument("--disposition-reason")
+    window_note_parser.add_argument(
+        "--problem-path",
+        action="append",
+        help="Ordered unresolved problem ID; repeat from broadest retained node to the active leaf",
+    )
+    window_note_parser.add_argument("--set-current", action="store_true")
+    window_note_parser.add_argument("--hypothesis")
+    window_note_parser.add_argument("--current-action")
+    window_note_parser.add_argument("--focus-latest-result")
+    window_note_parser.set_defaults(func=cmd_window_note)
 
     monitor_ack_parser = subparsers.add_parser(
         "monitor-ack",
@@ -5883,9 +6862,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     evaluation_parser = subparsers.add_parser(
         "evaluation-anchor",
-        help="Lock or replace the agent-owned primary metric before broad tuning",
+        help="Lock or replace the agent-owned scientific scope and primary metric before broad tuning",
     )
     evaluation_parser.add_argument("state")
+    evaluation_parser.add_argument(
+        "--problem-path",
+        action="append",
+        required=True,
+        help="Ordered unresolved problem ID; repeat from broadest retained node to the active leaf",
+    )
+    evaluation_parser.add_argument("--problem-id", required=True)
+    evaluation_parser.add_argument("--method-cluster-id", required=True)
+    evaluation_parser.add_argument("--falsifiable-prediction", required=True)
     evaluation_parser.add_argument("--primary-metric", required=True)
     evaluation_parser.add_argument(
         "--metric-scale",
@@ -5901,6 +6889,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--reason",
         required=True,
         help="Why this metric definition is appropriate before broad tuning",
+    )
+    evaluation_parser.add_argument(
+        "--legacy-simple-combination-counterfactual",
+        help="Meaning-preserving v14 L2 enrichment used only when relocking the exact migrated leaf, method, and prediction",
     )
     evaluation_parser.set_defaults(func=cmd_evaluation_anchor)
 
@@ -5980,6 +6972,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Numeric project paper-ready gain floor in percentage points; defaults to 1 and cannot be lower",
     )
     confirm_parser.add_argument("--direction-id")
+    confirm_parser.add_argument(
+        "--problem-path",
+        action="append",
+        help="Ordered unresolved problem ID; repeat from broadest retained node to the active leaf",
+    )
     confirm_parser.add_argument("--problem-id")
     confirm_parser.add_argument("--method-cluster-id")
     confirm_parser.add_argument("--problem")
@@ -5987,6 +6984,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_parser.add_argument("--paper-grade-rationale")
     confirm_parser.add_argument("--core-mechanism")
     confirm_parser.add_argument("--falsifiable-prediction")
+    confirm_parser.add_argument("--simple-combination-counterfactual")
     confirm_parser.add_argument(
         "--contribution-type", choices=sorted(PAPER_GRADE_CONTRIBUTION_TYPES)
     )
