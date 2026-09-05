@@ -366,15 +366,6 @@ class ResearchQueueCLITest(unittest.TestCase):
         set_roster: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         state = json.loads(self.state.read_text(encoding="utf-8"))
-        if set_roster:
-            self.set_baseline_roster(
-                status="MATCHED",
-                primary_metric=primary_metric,
-                metric_scale=metric_scale,
-                baseline_score=baseline_score,
-                our_score=our_score,
-            )
-        state = json.loads(self.state.read_text(encoding="utf-8"))
         if set_anchor:
             science_payload = (
                 (state.get("layer_checkpoints") or {}).get("science") or {}
@@ -394,6 +385,16 @@ class ResearchQueueCLITest(unittest.TestCase):
                     science_payload.get("falsifiable_prediction")
                     or "removing source-identifiable residuals improves unseen-site accuracy"
                 ),
+            )
+        if set_roster:
+            # Matched fixture scores belong to the anchor just established,
+            # not to an old metric scale that the anchor replacement clears.
+            self.set_baseline_roster(
+                status="MATCHED",
+                primary_metric=primary_metric,
+                metric_scale=metric_scale,
+                baseline_score=baseline_score,
+                our_score=our_score,
             )
         baseline_search_scope = "SIGIR/KDD/WWW/RecSys 2022-2026; searched 2026-08-28"
         baseline_source = "baseline citation and result table recorded in L2"
@@ -1438,7 +1439,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
 
         summary = json.loads(self.run_cli("status", self.state).stdout)
-        self.assertEqual(summary["schema_version"], 15)
+        self.assertEqual(summary["schema_version"], 16)
         self.assertEqual(summary["layer_checkpoints"]["compass"], original_compass)
         self.assertEqual(
             summary["instruction_maintenance"]["recent_updates"], []
@@ -2432,7 +2433,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertEqual(
             migrated["layer_checkpoints"]["direction"]["status"],
             "LEGACY_CONFIRMED_NEEDS_AUDIT",
@@ -2469,7 +2470,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema-v12 migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertIsNone(migrated["evaluation_anchor"])
         self.assertTrue(migrated["evaluation_anchor_history"][-1]["legacy_derived"])
         self.assertEqual(
@@ -3418,18 +3419,16 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.assertEqual(evidence.read_text(encoding="utf-8"), original)
             self.run_cli("audit", self.state)
             evidence.write_text(original + "changed result\n", encoding="utf-8")
-            changed = self.run_cli("audit", self.state, ok=False)
-            codes = {
-                issue["code"]
-                for issue in json.loads(changed.stdout)["control_issues"]
-            }
-            self.assertIn("SCIENCE_EVIDENCE_RECORD_CHANGED", codes)
+            self.run_cli("audit", self.state)
+            selected = json.loads(self.state.read_text(encoding="utf-8"))["layer_checkpoints"]["science"]
+            self.assertEqual(selected["status"], "CONFIRMED_BY_PI")
             assessment = self.root / "paper-ready-after-drift.md"
             assessment.write_text("# assessment\n", encoding="utf-8")
-            blocked = self.enter_paper_ready(assessment, ok=False)
-            self.assertIn("complete L1 and L2", blocked.stderr)
+            self.enter_paper_ready(assessment)
             evidence.write_text(original, encoding="utf-8")
-            self.run_cli("audit", self.state)
+            blocked = self.run_cli("audit", self.state, ok=False)
+            codes = {issue["code"] for issue in json.loads(blocked.stdout)["control_issues"]}
+            self.assertIn("PAPER_EVIDENCE_REVIEW_REQUIRED", codes)
         state = json.loads(self.state.read_text(encoding="utf-8"))
         ref = state["layer_checkpoints"]["science"]["payload"]["evidence_refs"]["results"]
         self.assertTrue(Path(ref["path"]).is_absolute())
@@ -3454,7 +3453,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.run_cli("notify", self.state, "--text", "save migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
         questions = {q["id"]: q for q in migrated["macro_questions"]}
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertEqual(questions[first]["superseded_by"], second)
         self.assertEqual(
             migrated["decision_target_revisions"]["direction:D001"], 2
@@ -3473,7 +3472,7 @@ class ResearchQueueCLITest(unittest.TestCase):
 
         self.run_cli("notify", self.state, "--text", "save schema migration")
         migrated = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertEqual(
             migrated["instruction_maintenance"]["recent_scope_removals"], []
         )
@@ -3809,7 +3808,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             },
         )
 
-    def test_engineering_only_voting_cannot_be_l2_core_mechanism(self) -> None:
+    def test_novelty_is_not_decided_by_a_substring(self) -> None:
         self.init_exploration()
         self.confirm_direction(
             self.add_answer("direction", "Choose D001?", outcome="select")
@@ -3820,7 +3819,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             method_cluster_id="M-VOTE",
             falsifiable_prediction="voting raises accuracy",
         )
-        blocked = self.run_cli(
+        accepted = self.run_cli(
             "confirm",
             self.state,
             "--layer",
@@ -3830,7 +3829,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--record",
             self.l2,
             "--pi-decision",
-            "Evaluate this candidate",
+            "Promote this mechanism after reviewing the evidence",
             "--pi-outcome",
             "approve",
             "--direction-id",
@@ -3842,21 +3841,21 @@ class ResearchQueueCLITest(unittest.TestCase):
             "--method-cluster-id",
             "M-VOTE",
             "--problem",
-            "model disagreement",
+            "source-specific shortcuts",
             "--nearest-work-gap",
-            "existing systems disagree",
+            "nearest methods do not identify the nuisance variable",
             "--paper-grade-rationale",
-            "claimed mechanism",
+            "identifiable nuisance estimation is the scientific contribution",
             "--core-mechanism",
-            "weighted expert voting",
+            "identify a nuisance variable; unlike weighted voting, remove its effect before classification",
             "--falsifiable-prediction",
             "voting raises accuracy",
             "--simple-combination-counterfactual",
-            "the proposal itself is only a weighted combination",
+            "score combination cannot identify the nuisance variable",
             "--contribution-type",
             "mechanism",
             "--innovation-claim",
-            "combine several experts",
+            "identify and remove nuisance information",
             "--external-baseline-status",
             "roster identified",
             "--ceiling-summary",
@@ -3869,11 +3868,10 @@ class ResearchQueueCLITest(unittest.TestCase):
             self.l2,
             "--result-record",
             self.l2,
-            ok=False,
         )
-        self.assertIn("engineering-only", blocked.stderr)
+        self.assertEqual(accepted.returncode, 0)
         state = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(state["layer_checkpoints"]["science"]["status"], "UNSET")
+        self.assertEqual(state["layer_checkpoints"]["science"]["status"], "CONFIRMED_BY_PI")
 
     def test_problem_path_must_be_nonempty_unique_and_end_at_leaf(self) -> None:
         self.init_exploration()
@@ -4196,7 +4194,7 @@ class ResearchQueueCLITest(unittest.TestCase):
             migrated["monitoring"]["legacy_unscoped_artifact_fingerprint"],
             "legacy-artifact",
         )
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertTrue(
             migrated["dataset_baseline_roster"]["schema_v13_review_required"]
         )
@@ -4227,7 +4225,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         migrated = json.loads(
             self.run_cli("status", self.state).stdout
         )
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertEqual(migrated["phase"], "confirmed_project")
         self.assertIsNone(migrated["paper_ready_assessment_usable"])
         self.assertIn(
@@ -4265,18 +4263,12 @@ class ResearchQueueCLITest(unittest.TestCase):
         self.assertNotIn("debug_loader.py", serialized)
         self.assertNotIn("control_issue_codes", report)
 
-    def test_macro_only_policy_has_no_project_level_l3_disclosure_override(self) -> None:
-        policy = (ROOT / "references" / "collaboration-policy.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn(
-            "unless the user explicitly changes this project-specific communication preference",
-            policy,
-        )
-        self.assertIn(
-            "cannot be bypassed by an ad hoc progress or debugging request",
-            policy,
-        )
+    def test_communication_policy_keeps_defaults_separate_from_user_requests(self) -> None:
+        # Documentation consistency only; independent forward tests cover behavior.
+        policy = (ROOT / "references" / "collaboration-policy.md").read_text(encoding="utf-8")
+        self.assertNotIn("cannot be bypassed by an ad hoc", policy)
+        self.assertIn("If the user explicitly asks", policy)
+        self.assertIn("Do not request a second confirmation", policy)
 
     def test_window_status_excludes_notifications_from_before_window_start(self) -> None:
         self.init_exploration()
@@ -4584,7 +4576,7 @@ class ResearchQueueCLITest(unittest.TestCase):
         state.pop("research_window", None)
         self.state.write_text(json.dumps(state), encoding="utf-8")
         report = json.loads(self.run_cli("status", self.state, "--window").stdout)
-        self.assertEqual(report["schema_version"], 15)
+        self.assertEqual(report["schema_version"], 16)
         self.assertEqual(report["window_availability"], "NOT_RECORDED")
         self.assertEqual(report["research_window"]["l1_cards"], [])
         self.assertEqual(report["research_window"]["l2_cards"], [])

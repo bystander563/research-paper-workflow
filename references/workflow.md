@@ -1,461 +1,210 @@
 # Workflow and gates
 
-This file is the canonical stage model for research exploration and iteration.
-It answers three questions: where the work is now, what may continue, and what
-must be true before the next phase.
+This file owns research phases and scientific approval gates.
+[exploration-policy.md](exploration-policy.md) owns research judgment;
+[collaboration-policy.md](collaboration-policy.md) owns interaction and monitoring;
+[research-state.md](research-state.md) owns records and controller contracts.
 
 ## Layers are not phases
 
-- **L1 direction** and **L2 scientific story** are durable content layers whose
-  material state and user decisions must be retained.
-- **L3 implementation** is an execution layer whose retention is chosen by the
-  agent or active project.
-- `discussion`, `exploration`, `confirmed_project`,
-  `paper_ready_pending_pi`, and `paper_handoff_approved` are temporal workflow
-  phases.
-- `PAUSED_FOR_PI` is a pause status that can overlay an execution phase; it is
-  not a scientific stage and does not erase the underlying phase.
-- Project-instruction maintenance is another overlay. It keeps stable repository
-  instructions usable but neither creates a research layer nor advances a
-  scientific phase.
-- The **current research window** is a replace-on-next-instruction reporting
-  overlay. It summarizes L1/L2 changes since the latest explicit user request
-  to execute research. It is not L4, a workflow phase, an experiment archive,
-  or authority for any scientific gate.
-
-Use these exact phase names in documentation and `research_queue.py`.
-
-## Current research-window lifecycle
-
-Open a new window immediately before acting on each explicit user instruction
-to start, continue, run, iterate, or begin monitoring. `init --phase
-exploration` opens the first window from the same direct instruction;
-subsequent instructions use `window-start`. A new window replaces the prior
-window's cards and retains no window history. It snapshots only the current
-checkpoint identities and baseline/evaluation revisions needed to interpret
-later deltas.
-
-Do not open a window for ordinary discussion, a progress query, a scheduled
-wakeup, or an automatic monitor continuation. These continue or read the
-existing window. If one message asks for the old status and then authorizes
-continuation, run `status --window` and report it before `window-start` replaces
-it.
-
-During the window, maintain keyed L1/L2 summary cards with `window-note` before
-moving to the next scientific action. One stable task-dataset, active leaf,
-method-cluster, or dataset-baseline identity has one card that is updated in
-place. Checkpoint replacements, baseline-roster revisions, and typed scientific
-switches synchronize automatically. Ordinary variants, hyperparameters, seeds,
-bugs, commands, and stop rules are L3 and never become cards.
-An L2 problem card may project the ordered unresolved path ending at that leaf;
-the durable L2 record remains authoritative.
-
-The window's `current_focus` states the active L1/L2 hypothesis, current macro
-test, latest interpretable evidence, and next macro action. The window is a
-non-authoritative reporting cache: it cannot confirm compass/L1/L2, satisfy G3,
-consume a PI decision, or authorize paid compute, writing, or external action.
-When it conflicts with checkpoints, L1/L2 records, the external-baseline roster,
-the evaluation anchor, or PI receipts, those canonical sources win and the
-report must flag the inconsistency.
-
-## Existing-project intake
-
-Run `research_queue.py audit STATE` before resuming any project with workflow
-state. Run `agents-audit STATE --cwd WORKING_DIRECTORY` as well when project
-instructions exist, the working directory changed, or the controller has no
-snapshot for that scope. An existing-scope audit compares against its saved
-snapshot and never accepts changed content; use `agents-record` after classifying
-an intentional change. If an audited working-directory scope no longer exists,
-remove that stale scope with `agents-scope-remove`; removing a scope whose
-directory still exists requires PI approval. Legacy approvals without the current structured payload
-or scoped decision receipt are reported as needing audit; existing code and
-results do not waive that decision. Follow
-[agents-maintenance.md](agents-maintenance.md) for instruction content and
-change authority.
-
-If no workflow state exists, inspect the active project authority and evidence
-before initializing:
-
-- active method research -> initialize or bootstrap the earliest missing
-  research checkpoint;
-- substantially fixed task, method, experiment package, and manuscript route ->
-  hand off to a submission workflow without reconstructing retrospective L1/L2;
-- non-paper work -> do not activate this workflow.
-
-## Stage 0: discussion -> exploration
-
-Ordinary explanation, critique, and idea discussion remain read-only. Enter
-`exploration` only when the user asks to start, continue, run, iterate, or
-monitor research.
-
-Establish the research compass:
-
-- target submission time and/or venue;
-- research domain;
-- optional user concept and whether it is only a seed or explicitly frozen.
-
-Gate `G0 EXPLORATION_READY`:
-
-- the domain is user-confirmed;
-- a venue or submission window is user-confirmed;
-- project instructions and existing state have been located;
-- the effective project-local instruction chain has been audited when present;
-- execution is authorized.
-
-Initialize in `discussion` by default. Starting directly in `exploration` is
-allowed only when the venue/window, domain, and actual user instruction are
-provided together. Initialization cannot select a later phase. The controller
-creates the L1 file and L2 directory rather than relying on each agent to invent
-its own layout.
-
-## Stage 1: exploration -> confirmed_project
-
-Scout a small ranked set of task-dataset candidates. For each, check:
-
-- why the task matters;
-- whether the dataset genuinely measures that task;
-- whether credible performance headroom remains;
-- nearest-work collision risk;
-- availability of meaningful published comparators;
-- at least one credible dataset not previously exposed in the project, or a
-  documented search boundary and blocker;
-- time, data, and compute feasibility;
-- fit to the venue or submission window.
-
-Cheap dataset inspection, literature verification, and baseline-feasibility
-work may continue while the choice is pending. Do not start sustained method
-search or broad tuning for an unconfirmed direction.
-
-Prepare an L1 decision packet containing:
-
-1. the ranked candidates and agent recommendation;
-2. the proposed task type and dataset or dataset bundle;
-3. the mandatory unexposed-dataset search result and whether the agent
-   recommends adopting it;
-4. the project evidence standard, stated as user choices:
-   - required competitive bar, such as SOTA, near-SOTA, or another explicit bar;
-   - novelty sufficiency standard;
-   - whether generalization, a second dataset, or another evidence axis is
-     required;
-   - what additional result conditions would justify considering paper writing;
-5. unresolved risks and what can continue while the user decides.
-
-Gate `G1 L1_CONFIRMED`:
-
-- task type and dataset are explicitly selected by the user;
-- the evidence standard is recorded, including explicit “not required”,
-  tentative, or deferred choices where applicable;
-- the exact user decision is linked from L1 and its controller decision receipt;
-- the decision outcome is `select` or `approve`, not merely “answered”;
-- a queued approval is scoped to this direction ID and consumed only here;
-- the structured checkpoint contains task, dataset, competitive bar, novelty
-  sufficiency, generalization requirement, additional paper-ready requirements,
-  the explicit adopted-dataset inventory with exactly one primary dataset, and
-  the unexposed-dataset search result;
-- the numeric paper-gain floor is recorded separately for G3; a project may
-  raise but not lower the controller minimum;
-- descriptive paper-ready requirements may add conditions but cannot redefine
-  or lower the numeric floor;
-- no unresolved contradiction exists with another user-frozen field.
-
-Only then enter `confirmed_project`. Replacing the task, dataset, or adopted
-evidence standard invalidates G1 and requires another user decision.
-
-## Stage 2: confirmed_project -> L2 scientific story
-
-Within the confirmed L1 direction:
-
-1. map nearest conceptual work from primary sources and group it by shared
-   scientific problem;
-2. build a compact problem map and retain the unresolved path to the deepest
-   defensible active leaf; start at the first unresolved layer, allow one node,
-   and keep engineering failures in L3;
-3. build the external-baseline roster, indexed by every adopted dataset;
-4. for the active leaf, define one or more method clusters, each with a shared
-   intuition, mathematical mechanism, simple-combination counterfactual, and
-   falsifiable prediction;
-5. run a cheap representative screen for the active cluster;
-6. give broad tuning only to clusters with credible potential;
-7. compare the resulting ceiling summary with real external methods;
-8. when credible clusters for a leaf are exhausted, notify the user and select
-   another paper-grade leaf instead of accumulating score patches.
-
-The baseline roster must be identified and source-checked before broad tuning.
-Every adopted dataset has its own strongest recent top-conference comparator,
-venue/year/source/search scope, protocol-match status, and current result slot.
-The same row records source evidence or an explicit blocker for the dataset
-origin result, recent top-conference comparator, a different published
-mechanism, and a strong simple baseline.
-Do not reuse a comparator or score from a different dataset.
-The full matched local reproduction need not be complete at that moment. A
-roster row may be `IDENTIFIED` or `BLOCKED` while L2 method work proceeds, but
-only `MATCHED` rows can support a paper-worthy judgment or pass G3. Use
-`baseline-roster` to create or revise this structured roster. The command
-rejects missing, extra, or role-mismatched dataset rows, incomplete comparison
-roles, inconsistent protocol states, and an explicit protocol mismatch labeled
-as verified.
-
-After the roster covers every adopted dataset and before broad tuning, use
-`evaluation-anchor` to lock the ordered problem path, active leaf, method
-cluster, falsifiable prediction, agent-selected primary metric, its `0–1` or
-`0–100` scale, and higher-is-better direction. This creates no PI question and
-imposes no universal aggregation rule. Replacing any anchored field is
-autonomous during exploration, but results tied only to the previous revision
-cannot directly pass G3; report evidence produced or explicitly reassessed under
-the current revision.
-After G2, an exploratory anchor may target a new candidate without silently
-replacing the confirmed story. The mismatch is visible and blocks G3 until the
-user approves a matching replacement L2 checkpoint.
-
-Prepare an L2 decision packet containing:
-
-- the nearest-work problem clusters, ordered unresolved problem path, and
-  deepest defensible active leaf;
-- the active leaf ID, plain-language cause, and why it is a scientific
-  contribution rather than an engineering issue;
-- one concrete example of how a strong baseline fails;
-- the active method-cluster ID, solution intuition, predicted diagnostic,
-  mathematical mechanism, simple-combination counterfactual, falsifiable
-  prediction, and minimal implementation;
-- representative evidence for promising and exhausted problem/method clusters
-  only when it affects the next scientific choice;
-- proposed innovation claim and exact difference from nearest work;
-- external-baseline roster and comparability status;
-- our decision-relevant results and current-project ceiling summary;
-- remaining evidence gap, paper potential, and agent recommendation.
-
-The packet records the selected scientific evidence, not every trial, tuning
-trajectory, failed branch, or stopping rule.
-
-Gate `G2 L2_CONFIRMED`:
-
-- an explicit user decision promotes the identified problem path + active leaf
-  + method cluster + core mechanism + innovation claim;
-- the checkpoint stores the ordered path, active leaf ID, method-cluster ID,
-  nearest-work gap, paper-grade rationale, simple-combination counterfactual,
-  falsifiable prediction, and contribution type;
-- that path, leaf, method cluster, and prediction exactly match the current
-  pre-tuning evaluation anchor;
-- L2 links to its L1 direction, verified nearest work, external comparison, and
-  decision-relevant result evidence;
-- the controller stores resolvable references to the nearest-work,
-  problem-portfolio, external-baseline, and result records used for the
-  decision;
-- unsupported or blocked comparisons are labeled rather than treated as wins;
-- the exact user decision is linked from L2 and its controller decision receipt.
-- the decision outcome is `select` or `approve`; `reject`, `defer`, and
-  `informational` cannot pass G2.
-- a queued approval is scoped to this scientific-story ID and consumed only
-  here.
-
-An implementation win or internally best variant never passes G2 by itself.
-Expert weighted voting, heuristic fusion, module stacking, threshold tuning,
-and similar engineering combinations cannot be promoted as the L2 core merely
-by tuning or renaming. A weighted implementation remains eligible when its
-scientific contribution is a distinct estimand, objective, constraint,
-mechanism, or theory and the counterfactual/diagnostic separates it from ordinary
-fusion. Before G2, every exploratory path, active-leaf, or method-cluster switch
-is a plain-language notification. Replacing the confirmed path, leaf, method
-cluster, core mechanism, prediction, or innovation invalidates G2 and requires
-another scoped user decision.
-
-## Stage 3: Evidence completion -> paper_ready_pending_pi
-
-Continue experiments inside the confirmed L1/L2 contract. Hyperparameters,
-routine metrics, implementation details, diagnostics, and bug repair remain
-agent-owned L3 work unless the user froze them. Resolve engineering problems in
-L3 without presenting them as scientific pivots. Notify model-family changes
-only when they change L2 meaning. When any L3 event changes L1/L2 evidence,
-report only the resulting macro consequence, not the engineering cause or
-repair detail.
-
-Assess the current package against the L1 evidence standard. Do not silently
-replace that standard because results are inconvenient. If a requirement is no
-longer sensible, present a proposed L1 change for user decision.
-
-Gate `G3 PAPER_DECISION_READY`:
-
-- G1 and G2 remain valid;
-- a current evaluation anchor is tied to the active L1 direction and exactly
-  matches the confirmed L2 problem path, active leaf, method cluster, and
-  falsifiable prediction; the scored result is tied to that anchor revision;
-- the comparison roster covers the dataset-origin anchor, the strongest recent
-  top-conference comparator, a different published mechanism, and a strong
-  simple baseline whenever those roles are applicable; any missing role has an
-  explicit blocker and correspondingly narrower claim;
-- a primary source identifies the strongest recent top-conference baseline found
-  for the same protocol, and the report explains the task, dataset/split, labels,
-  supervision/inference information, metric, and evaluation match;
-- every adopted dataset has a `MATCHED` dataset-baseline row containing its own
-  external comparator and our result; exactly one row is marked as the primary
-  numeric comparison;
-- every `MATCHED` row has `VERIFIED_MATCH` protocol status, and its structured
-  comparison-role coverage includes source evidence or a concrete blocker;
-- the paper packet copies the current roster revision and payload hash; a later
-  roster change archives a bounded invalidation receipt and returns a pending
-  packet to `confirmed_project`;
-- on a higher-is-better primary metric, our result exceeds that baseline by at
-  least the L1 floor, which can never be below 1 percentage point (`0.01` on a
-  `0–1` scale or `1.0` on a `0–100` scale);
-- the narrowest supported claim is explicit;
-- the strongest protocol-matched external comparison is explicit;
-- the remaining reviewer-level objection is explicit;
-- necessary and optional additional work are separated;
-- project-appropriate repeat, uncertainty, or stability evidence is explicit,
-  without a universal seed count or significance test;
-- the package is assessed against every recorded L1 evidence criterion.
-
-If the headline result uses `n` favorable seeds selected from a larger pool,
-the agent must show the total pool, selection rule, and scientific risk only in
-the user decision conversation and obtain a scoped PI acceptance before G3.
-Do not copy that detailed disclosure into project or manuscript documents. The
-controller retains only the minimal acceptance receipt and its link to the
-assessment.
-
-Before asking the user, generate a readable project-local paper-decision report
-covering the current task, adopted datasets, compact problem path, active leaf
-ID, method-cluster ID,
-problem in current/nearest work, innovation, concrete method, final results, the
-current roster revision/hash, per-dataset external-baseline matrix, and primary
-comparison dataset, baseline identity/venue/year/source and search scope,
-protocol-match evidence, the metric anchor and current-revision evidence,
-metric scale, baseline score, our score, computed point gain, required floor,
-stability evidence, and the remaining G3 assessments. Only after that report
-exists may the workflow enter `paper_ready_pending_pi` and ask whether to start
-paper writing and what headline claim to use. This is a real user decision even
-when the agent strongly recommends proceeding.
-
-A queued paper decision must be created and answered after the current report
-receipt is generated. The controller binds the consumed approval to that
-report's structured-payload hash and generation time, so an approval from an
-older or pre-report question cannot authorize a rebuilt packet.
-
-The transition into `paper_ready_pending_pi` requires that project-local durable
-report and a structured receipt covering its scientific and numeric fields. The
-controller checks completeness, arithmetic, the configured floor, provenance,
-and artifact locking. It cannot determine whether a venue is genuinely top-tier
-or whether two protocols are scientifically matched; the agent must verify and
-source those claims before invoking the gate. The phase cannot be set at
-initialization or reached without complete typed L1/L2 checkpoints.
-
-The assessment is content-locked at this gate. If it changes before the PI
-decision is consumed, rebuild the assessment and present the changed meaning;
-the old decision must not authorize the rewritten evidence.
-
-If approved, record a typed `paper` checkpoint containing the confirmed science
-checkpoint, headline claim, durable record, and handoff target. Only then enter
-`paper_handoff_approved`. This research workflow ends with the durable L1/L2
-package as the handoff. Route story locking, drafting, review, revision,
-compilation, venue QA, and submission to a downstream paper-submission workflow.
-If declined or deferred, continue only within the confirmed research direction
-or obtain the needed L1/L2 change. Approval to enter writing does not approve an
-arbitrary later story packet or submission action; downstream approval gates
-remain separate.
-
-The user may later withdraw this writing authorization. `paper-revoke` archives
-the approval receipt, returns the phase to `confirmed_project`, preserves L1/L2,
-and requires a rebuilt report plus a new paper decision before writing resumes.
-
-## Pause overlay: PAUSED_FOR_PI
-
-Only active unanswered PI decisions count toward the cap. Notifications and
-user-deferred decisions do not. A deferred item remains visible with a recorded
-revisit condition and returns to the active queue when that condition is met.
-
-At five unanswered PI decisions:
-
-1. set `PAUSED_FOR_PI`;
-2. launch nothing new;
-3. stop iteration, polling, monitoring, and analysis at the next safe checkpoint;
-4. allow an already-running atomic process to reach a safe end;
-5. present the five questions in priority order.
-
-Resume the underlying phase when the unanswered count falls below five unless
-the user asks to remain paused. A 20-minute timeout only batches questions; it
-never passes a gate.
-
-The controller rejects phase advancement, new active-job registration, and
-active-to-active polling or advancement while paused. It also rejects new
-project-instruction audit scopes and instruction-maintenance mutations.
-Answering questions, recording notifications, read-only status/audit checks, and
-marking an already-running job with a safe terminal status remain allowed.
-
-The user can also issue a direct manual pause independently of the question cap.
-The controller then reports `PAUSED_BY_PI` and blocks active execution until a
-direct `resume` instruction. If both conditions exist, the five-question
-`PAUSED_FOR_PI` state remains visible and resolving the manual pause alone does
-not bypass it.
-
-## Active-job recovery
-
-Register every long-running process that must survive context compaction with:
-
-- stable job ID and plain-language purpose;
-- reproducible command and/or terminal/session ID;
-- `queued` or `running` state;
-- a meaningful next-check time and a concrete resumable next action.
-
-Update it to `completed`, `failed`, `blocked`, or `cancelled` when appropriate,
-then remove the record when it no longer helps recovery. This is a live L3
-index, not a mandatory run archive. The controller records resumability; it does
-not schedule, poll, or terminate the process by itself.
-
-Mutating controller commands for one state file are serialized by a small
-adjacent lock file. If another task holds the lock, exit and retry after that
-command finishes; never bypass the lock or use a tight polling loop. This
-prevents an interactive task and a scheduled wakeup from silently overwriting
-each other's questions, decisions, notifications, or job updates.
-
-### Unattended scheduled wakeups
-
-Create or update a host scheduled task only when the user explicitly requests
-unattended monitoring and the host exposes that capability. Treat it as a
-state-aware wakeup, not a fixed 20-minute research loop:
-
-1. set the next check from the job's expected completion or another meaningful
-   state boundary; use the 20-minute mark only when an unanswered question
-   leaves other authorized work to resume;
-2. run `status STATE --compact`; if `wakeup_changed_since_ack` is false and each
-   current job/result fingerprint equals that job's entry in
-   `acknowledged_artifact_fingerprints`, exit before loading the full
-   state, literature, or scientific reasoning; a next-check reschedule alone
-   must not trigger full analysis, while an unanswered question crossing the
-   20-minute batching boundary changes the semantic fingerprint once;
-3. when nothing changed, update the next meaningful check and exit without a
-   narrative report;
-4. when a result changed, analyze it, update the scientific state, and launch at
-   most one next experiment batch; only after those writes succeed, read compact
-   status again, then run `monitor-ack --job-id JOB --artifact-fingerprint ...`
-   with its new wakeup fingerprint for each processed job; omitting an artifact
-   update preserves existing job acknowledgements, while
-   `--clear-artifact-fingerprint` explicitly clears one job;
-5. schedule no next wakeup when the user stopped, `PAUSED_FOR_PI` or
-   `PAUSED_BY_PI` is active,
-   L1/L2 is invalid, the next action needs a macro decision or paid compute, no
-   authorized work remains, or G3 is reached.
-
-For desktop-local work, the machine and app must remain available. Give the
-scheduled task only the permissions needed for the known project command,
-artifact check, and workflow-state update; do not broaden access merely to
-avoid a failed background run.
-
-A failed experiment alone is not a stop condition when another authorized,
-promising action remains. If scheduled tasks are unavailable, preserve the job
-ID, command/session, fingerprint, next check, and next action so a later Codex
-task can resume without replaying the full chat.
+L1 is direction/constraints, L2 is evolving problem-method-evidence reasoning,
+and L3 executes experiments. All remain available throughout research.
+L2 contains both exploratory hypotheses and explicitly confirmed selections;
+an update to one is not automatic authority over the other.
+
+The controller's phases are `discussion`, `exploration`,
+`confirmed_project`, `paper_ready_pending_pi`, and
+`paper_handoff_approved`. Pause and reporting windows are overlays, not new
+layers, research achievements or PI approvals. Do not expose phase machinery
+when an ordinary explanation answers the user's question.
+
+## Start or resume
+
+Discussion remains analysis-only unless the user requests execution or clearly
+directs a change. To begin exploration, obtain venue/submission window and domain.
+An optional idea is a seed unless separately fixed. Changing only that seed
+does not invalidate already confirmed L1/L2 choices. Preserve it when changing
+venue/domain unless the user explicitly clears it.
+
+For an existing state, run the control audit and read the current L1/L2 and
+pending decisions. Check actual instruction conflicts before dependent work;
+load instruction-maintenance procedures only for changed/conflicting instructions,
+a changed scope, or deliberate maintenance. Do not run a maintenance ceremony
+merely because a researcher asked to discuss a method.
+
+For an existing project without state:
+
+- active method research: establish the earliest genuinely missing choice;
+- substantially fixed task/method/experiment/manuscript package: route directly to the submission workflow;
+- ordinary non-paper work: do not activate this Skill.
+
+Use explicit decisions already present in the conversation or durable evidence.
+Do not infer consent from code or results, and do not ask the user to repeat
+an unambiguous decision just to create a receipt.
+
+## G1: selected task and datasets
+
+Scout a small ranked shortlist and recommend a meaningful task-data pair.
+Explain fit, headroom, nearest-work collision, external comparisons,
+feasibility, and the unexposed-dataset search outcome.
+
+The user selects the task and datasets and adopts the evidence standard:
+competitive/novelty requirements, generalization or second-dataset requirements,
+additional paper conditions and any stricter numeric gain floor. Explicit
+"not required" or deferred expectations are valid where applicable; neither
+waives the required dataset search nor lowers G3's numeric floor.
+
+A typed L1 checkpoint binds the actual scoped approving/selecting decision to:
+
+- task, dataset description and explicit adopted-dataset inventory;
+- exactly one primary dataset and every adopted supporting dataset;
+- unexposed-dataset search outcome;
+- evidence standard and the numeric paper floor.
+
+Cheap feasibility checks may continue while a choice is pending. Sustained
+method search and broad tuning require confirmed L1. Replacing an adopted
+task/dataset or evidence standard needs a scoped decision, not a timeout.
+After selection, establish the external comparison reference for each adopted
+dataset as described in [exploration-policy.md](exploration-policy.md#nearest-work-and-external-comparisons).
+Incomplete reproduction may coexist with cheap diagnostics; it does not turn
+our own starting model into the competitive reference.
+
+## Work inside L1: hypotheses before a fixed story
+
+Use nearest-work evidence to locate the deepest defensible unresolved leaf.
+Fixed upstream scope is background; one problem node can be sufficient.
+Derive the method from a suspected cause and test a representative minimal
+candidate. Grow one record through hypothesis, diagnostics, external comparison,
+ceiling search and interpretation rather than duplicating templates.
+
+Before broad tuning:
+
+- source-check the external-baseline roster for every adopted dataset;
+- lock problem path/leaf, method cluster, falsifiable prediction, primary metric,
+  scale and direction in the agent-owned evaluation anchor.
+
+A baseline row may still be `IDENTIFIED` or `BLOCKED` during exploration.
+Full matched reproduction need not precede a cheap diagnostic. The roster must
+not be fabricated from our own variants, and unmatched scores cannot justify
+paper-readiness. Numeric/structural validation is not scientific verification.
+
+Switching exploratory problems or methods within L1 is autonomous with a
+plain-language notification. Changing the anchor needs no extra PI question;
+old-anchor results require new evaluation or an explicit evidence reassessment.
+Before closing a mechanism, check implementation, baseline health and an
+informative diagnostic. If credible clusters fail, reconsider the leaf.
+
+## G2: promote the scientific selection
+
+When a ceiling summary and meaningful external comparison exist, discuss the
+current problem, mechanism, innovation, evidence and remaining weakness. Ask
+whether to adopt that scientific selection, keep it exploratory, or close it.
+An internal best score does not decide this for the user.
+
+The checkpoint records a scoped explicit PI decision and binds the current L1
+to problem path/leaf, method cluster, mechanism, falsifiable prediction, relevant
+alternative explanation, innovation and source-linked evidence. Its problem,
+method and prediction match the active evaluation anchor.
+
+This promotes a **selection**, not every future sentence or evidence-file byte.
+New results and literature can update the working record without repeating G2.
+When evidence contradicts the premise, mark the conclusion unsupported, stop
+using it, and discuss the consequence. Replacing the confirmed problem,
+mechanism, prediction or innovation still needs a scoped decision.
+
+An exploratory branch may coexist with confirmed L2 when authorized. Keep that
+distinction explicit: the exploratory anchor never silently overwrites the
+confirmed story, and only a matching confirmed selection can pass G3.
+Do not block all independent exploration just because an older story is no
+longer the current hypothesis.
+
+## G3: paper decision ready
+
+This gate means "ready to ask the user", not automatic writing approval.
+
+Require:
+
+- valid L1/L2 selections and an evaluation anchor matching the scored scientific hypothesis;
+- one `MATCHED`, `VERIFIED_MATCH` comparison row per adopted dataset, with source-checked recent top-conference coverage;
+- explicit coverage or a concrete blocker for dataset-origin, recent top-conference, different published mechanism and strong-simple roles; a missing essential comparison blocks the claim;
+- task/data/split, labels, inference information, metric and evaluation comparability checked from primary sources;
+- current, interpretable results and project-appropriate repeat/uncertainty/stability evidence;
+- assessment against every adopted L1 requirement, a narrow supported claim and strongest remaining objection.
+
+The primary metric is higher-is-better on a `0-1` or `0-100` scale.
+Let `gain_points = (ours - baseline) * 100` for `unit_interval`, or
+`gain_points = ours - baseline` for `percentage`. It must be at least
+`minimum_paper_gain_points >= 1.0` over the strongest recent top-conference
+protocol-matched baseline found for the primary dataset. Use the configured
+stricter floor when present. Free-text `paper_ready_threshold` supplies only
+additional requirements; it cannot redefine or lower the numeric field.
+Do not silently convert an incompatible metric to satisfy this gate.
+
+Generate a readable project-local paper report from the existing L1/L2 and
+comparison evidence, adding only the missing decision synthesis. Include task,
+datasets, active problem and nearest-work gap, innovation, concrete method,
+per-dataset comparisons, primary baseline identity/venue/source/search scope,
+metric/scale, scores and computed gain, stability, remaining objections,
+necessary versus optional work, and proposed headline claim.
+
+The report and its structured payload are locked at G3, together with current
+science-evidence versions. Evidence changes after G3 require a rebuilt report;
+they do not automatically revoke L1/L2 selections. Embedded and separately
+stored evidence follow the same principle. The controller verifies structure,
+arithmetic, provenance and version consistency; the agent verifies science.
+
+If the headline selects favorable seeds from a larger pool, disclose the total
+pool, selection rule and scientific risk to the user in the decision conversation
+and obtain scoped acceptance. Keep those details out of L1/L2, result cards,
+the report, AGENTS.md, README and downstream manuscript artifacts; retain only
+the minimal controller acceptance receipt. No universal seed count, aggregation
+or significance test is added by this workflow.
+
+Only after the current report exists, ask whether to write and which claim to
+use. Bind the decision to that exact report. Older/pre-report questions cannot
+authorize a rebuilt report; silence or a high score cannot pass this gate.
+
+## Writing handoff
+
+A typed paper checkpoint records the current report, confirmed science, chosen
+headline claim and handoff target, entering `paper_handoff_approved`.
+Reuse that package downstream rather than rewriting the same story. Respect the
+submission workflow's actual approval contract; writing approval does not
+approve a different story or any external submission.
+
+If declined or deferred, continue only authorized research. If the user revokes
+writing, `paper-revoke` retains L1/L2, withdraws paper authorization and requires
+a new report/decision before re-entry. Do not create retrospective approvals.
+
+## Reporting and recovery overlays
+
+A new explicit start/continue/run/iterate/monitor request opens a reporting
+window; a status query, discussion or automatic wakeup does not. For a combined
+status-and-continue message, report the previous window before starting another.
+A new boundary clears the delta view, not durable research notes. Carry the
+previous focus only when its scientific scope remains unchanged and label it
+as context, not newly performed work.
+
+Use `research-update` once per meaningful research development to update its
+keyed L1/L2 note and reporting projection. Numeric comparisons come from the
+roster. Retain selected intermediate conclusions, including branches tried and
+closed within a window, without a trial-by-trial archive.
+Controller-generated checkpoint/baseline/switch projections need no manual copy.
+
+Pause does not erase phase or scientific choices. The user can pause directly;
+five active unanswered PI decisions also stop new work at a safe endpoint.
+Deferred items are visible but do not count. For precise queue semantics, safe
+job recovery and unattended scheduling, read
+[collaboration-policy.md](collaboration-policy.md).
 
 ## Control audit
 
-`research_queue.py audit STATE` is a control-state audit. It fails when the
-current phase lacks a complete typed checkpoint, a decision receipt is unscoped
-or incorrectly reused, a core field has conflicting authorities, a required
-evidence reference or durable record is missing, a paper-ready assessment is
-incomplete or changed after its gate, a project checkpoint record is outside the project, a legacy
-approval needs audit, the adopted-dataset roster is missing/stale/mismatched,
-any audited instruction scope changed without a receipt,
-non-self-referential L2 evidence changed after confirmation, or an active job
-cannot be resumed. It verifies provenance
-and availability, not scientific adequacy. `agents-audit` separately reports
-instruction precedence and size without treating an oversized file as a
-scientific checkpoint failure. Run the control audit at startup, after
-migration, and before paper handoff.
+Audit on startup/recovery, after migration and before paper handoff. It checks
+typed authority, scoped decision receipts, required records, baseline/anchor
+consistency and paper evidence locks. It does not certify novelty or baseline
+comparability. A missing/changed artifact should block its dependent claim or
+gate, not manufacture a new scientific choice.
+
+AGENTS maintenance and job recovery are conditional execution support. Their
+procedures are not additional scientific stages. Do not repeatedly run a full
+audit during ordinary discussion or unchanged monitoring.

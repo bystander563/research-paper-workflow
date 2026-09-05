@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 SUPPORTED_SCHEMA_VERSIONS = set(range(1, SCHEMA_VERSION + 1))
 MIN_PAPER_READY_GAIN_POINTS = 1.0
 MAX_MACRO_QUESTIONS = 5
@@ -134,19 +134,6 @@ PAPER_GRADE_CONTRIBUTION_TYPES = {
     "objective",
     "theory",
 }
-ENGINEERING_ONLY_CORE_PATTERNS = {
-    "expert weighted voting",
-    "heuristic fusion",
-    "module stacking",
-    "threshold tuning",
-    "weighted expert voting",
-    "weighted voting",
-    "专家加权投票",
-    "专家投票",
-    "启发式融合",
-    "模块堆叠",
-    "调阈值",
-}
 NOTIFICATION_KINDS = {
     "general",
     "job_event",
@@ -174,6 +161,10 @@ WINDOW_CARD_STATUSES = {
     "SELECTED",
 }
 WINDOW_TERMINAL_STATUSES = {"BLOCKED", "CLOSED", "EXHAUSTED"}
+RESEARCH_OPTIONAL_FIELDS = (
+    "starting_result", "best_result", "latest_result", "disposition_reason",
+    "problem_path", "hypothesis", "current_action", "comparison_note",
+)
 WINDOW_MACRO_NOTIFICATION_KINDS = {
     "method_cluster_switch",
     "model_family_change",
@@ -233,6 +224,7 @@ PAPER_ASSESSMENT_PAYLOAD_FIELDS = (
     *PAPER_ASSESSMENT_CONTEXT_FIELDS,
     *PAPER_ASSESSMENT_CLI_FIELDS,
     "favorable_seed_selection",
+    "science_evidence_at_gate",
 )
 PRIVATE_PAPER_CONTROL_FIELDS = {"favorable_seed_selection"}
 RESERVED_FROZEN_KEYS = {
@@ -2305,7 +2297,7 @@ def update_record_placeholders(
             f"Paper-grade rationale: {payload['paper_grade_rationale']}  \n"
             f"Core mechanism: {payload['core_mechanism']}  \n"
             f"Falsifiable prediction: {payload['falsifiable_prediction']}  \n"
-            "Why a simple combination is insufficient: "
+            "Why the relevant simpler alternative is insufficient: "
             f"{payload['simple_combination_counterfactual']}  \n"
             f"Contribution type: `{payload['contribution_type']}`  \n"
             f"Innovation claim: {payload['innovation_claim']}  \n"
@@ -2373,32 +2365,28 @@ def ensure_l2_scaffold(state_path: Path, direction_id: str, payload: dict[str, A
     l2_path = research_root_for_state(state_path) / "L2" / f"{direction_id}.md"
     if not l2_path.exists():
         l2_path.write_text(
-            f"# {direction_id} scientific story\n\n"
+            f"# {direction_id}: problem, method and evidence\n\n"
             "<!-- RPW:L1_CONTEXT:START -->\n"
             f"{l1_context_body(direction_id, payload)}\n"
             "<!-- RPW:L1_CONTEXT:END -->\n"
             "<!-- RPW:SCIENCE_CURRENT:START -->\n"
-            "L2 status: `MAPPING_NEAREST_WORK`  \n"
-            "Active problem + method-cluster decision source: UNSET  \n"
+            "Confirmed L2 selection: UNSET (exploration may proceed within L1).\n"
             f"Last material update: {now_iso()}\n"
             "<!-- RPW:SCIENCE_CURRENT:END -->\n\n"
-            "## Nearest-work problem clusters and external baselines\n\nUNSET\n\n"
-            "## Dataset-indexed external-baseline roster\n\n"
-            "| dataset | role | strongest recent top-conference baseline | venue/year | source/search scope | protocol evidence/status | comparison-role coverage/blockers | metric/scale | baseline result | our matched result | row status |\n"
-            "|---|---|---|---|---|---|---|---|---|---|---|\n\n"
-            "## Active problem path and alternatives\n\n"
-            "Record only the unresolved path from the confirmed L1 scope to the deepest defensible active leaf. One node is valid; do not fabricate fixed or irrelevant ancestors.\n\n"
-            "| path position | problem ID | parent problem ID | status | nearest-work cluster | unresolved problem | scientific value | failure evidence | paper-grade rationale | active/next action |\n"
-            "|---|---|---|---|---|---|---|---|---|---|\n\n"
-            "Engineering bugs, runtime performance, data plumbing, and routine implementation repairs belong in L3 and must not be promoted into this table.\n\n"
-            "## Problem-linked method clusters\n\n"
-            "| active leaf problem ID | cluster ID | status | shared intuition | mathematical mechanism | simple-combination counterfactual | falsifiable prediction | representative evidence | external-baseline gap | next action |\n"
-            "|---|---|---|---|---|---|---|---|---|---|\n\n"
-            "Weighted expert voting, heuristic fusion, module stacking, threshold tricks, and similar engineering combinations may appear as baselines or L3 tools, not as the L2 core contribution.\n\n"
-            "## Active problem-to-method chain\n\nUNSET\n\n"
-            "## Decision-relevant results\n\nUNSET\n\n"
-            "## Method-cluster and ceiling summary\n\nUNSET\n\n"
-            "## L3 engineering notes (optional)\n\nUNSET\n",
+            "## Working research\n\n"
+            "Keep one evolving entry per meaningful mechanism: unresolved problem/leaf, "
+            "nearest-work gap, suspected cause, intuition, prediction, necessary mathematics, "
+            "relevant simpler alternative, evidence and next test. One problem node is valid.\n\n"
+            "Distinguish working hypotheses, supported findings and PI-confirmed selections. "
+            "Use research-update to maintain the note and progress view together. "
+            "Do not make a separate ceiling table repeating the method entry.\n\n"
+            "## Literature and comparison evidence\n\n"
+            "Link primary sources and decision-relevant artifacts. Nearest-work novelty and "
+            "experimental baseline roles are distinct. The generated baseline roster owns "
+            "comparison numbers; internal variants are not external competitors.\n\n"
+            "## Selected alternatives and decisions\n\n"
+            "Keep only changes and conclusions needed to understand the current direction. "
+            "Routine implementation and discarded tuning traces stay in project-native L3 tools.\n",
             encoding="utf-8",
         )
     else:
@@ -2463,6 +2451,37 @@ def research_window_start_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def research_focus_scope(state: dict[str, Any]) -> dict[str, Any]:
+    """Scientific context, independent of changing evidence and reporting receipts."""
+    checkpoints = state.get("layer_checkpoints") or {}
+    fields = {
+        "compass": ("venue_or_window", "domain"),
+        "direction": ("task_type", "dataset", "adopted_datasets", "evidence_standard"),
+        "science": (
+            "direction_id", "problem_path", "problem_id", "method_cluster_id",
+            "problem", "nearest_work_gap", "core_mechanism", "falsifiable_prediction",
+            "contribution_type", "innovation_claim",
+        ),
+    }
+    scope = {}
+    for layer, names in fields.items():
+        checkpoint = checkpoints.get(layer) or {}
+        payload = checkpoint.get("payload") or {}
+        scope[layer] = {
+            "id": checkpoint.get("id"),
+            "status": checkpoint.get("status"),
+            "selection": {name: payload.get(name) for name in names},
+        }
+    anchor = state.get("evaluation_anchor") or {}
+    scope["anchor"] = {
+        name: anchor.get(name) for name in (
+            "direction_id", "problem_path", "problem_id", "method_cluster_id",
+            "falsifiable_prediction", "primary_metric", "metric_scale", "metric_direction",
+        )
+    }
+    return scope
+
+
 def normalize_window_subject_id(value: Any) -> str:
     subject_id = str(value or "").strip()
     if not subject_id:
@@ -2490,6 +2509,7 @@ def upsert_research_window_card(
     disposition_reason: str | None = None,
     problem_path: list[str] | None = None,
     focus: dict[str, str] | None = None,
+    inherit_existing: bool = True,
 ) -> dict[str, Any] | None:
     """Upsert one macro L1/L2 card in the active, replace-on-start cache."""
 
@@ -2548,7 +2568,7 @@ def upsert_research_window_card(
             active_leaf=subject_id,
             label="research-window problem path",
         )
-    elif isinstance(existing, dict) and isinstance(existing.get("problem_path"), list):
+    elif inherit_existing and isinstance(existing, dict) and isinstance(existing.get("problem_path"), list):
         card["problem_path"] = list(existing["problem_path"])
     for name, value in (
         ("starting_result", starting_result),
@@ -2558,7 +2578,7 @@ def upsert_research_window_card(
     ):
         if nonblank(value):
             card[name] = str(value).strip()
-        elif isinstance(existing, dict) and nonblank(existing.get(name)):
+        elif inherit_existing and isinstance(existing, dict) and nonblank(existing.get(name)):
             card[name] = str(existing.get(name)).strip()
     if existing is None:
         window["cards"].append(card)
@@ -2572,7 +2592,14 @@ def upsert_research_window_card(
         current.get("layer"), current.get("kind"), current.get("subject_id")
     ) == key:
         window["current_focus"] = None
+    carried = (window.get("start_snapshot") or {}).get("carried_focus")
+    if status in WINDOW_TERMINAL_STATUSES and isinstance(carried, dict) and (
+        carried.get("layer"), carried.get("kind"), carried.get("subject_id")
+    ) == key:
+        window["start_snapshot"].pop("carried_focus", None)
     if focus is not None:
+        if status in WINDOW_TERMINAL_STATUSES:
+            raise SystemExit("A closed or exhausted candidate cannot be the current focus")
         focus_values = {
             "hypothesis": clean_text(focus.get("hypothesis"), "current-focus hypothesis"),
             "current_action": clean_text(
@@ -2589,6 +2616,7 @@ def upsert_research_window_card(
             "subject_id": subject_id,
             **focus_values,
             "updated_at": timestamp,
+            "scope_snapshot": research_focus_scope(state),
         }
     return card
 
@@ -2604,6 +2632,43 @@ def baseline_gap_summary(row: dict[str, Any]) -> str:
         f"status={row.get('status')}; protocol={row.get('protocol_status')}; "
         "matched numeric gap not yet available"
     )
+
+
+def external_reference_summary(state: dict[str, Any]) -> str:
+    """The external opponent stays visible; a free-text trial is not a matched score."""
+    if not baseline_roster_usable(state):
+        return "External reference unresolved: establish the adopted datasets' source-checked baseline roster; internal gains are not an external win."
+    rows = state["dataset_baseline_roster"]["rows"]
+    targets = [
+        f"{row['dataset']}: {row['baseline']} ({row['venue_year']}) = "
+        f"{row['baseline_score'] if row['baseline_score'] is not None else 'score unresolved'} "
+        f"[{row['metric']}, {row['metric_scale']}, {row['protocol_status']}]"
+        for row in rows
+    ]
+    return "; ".join(targets) + ". Compare this candidate under the matching dataset/protocol; internal variant gains do not replace that comparison."
+
+
+def read_research_entry(text: str, identity: str) -> tuple[dict[str, Any], str | None]:
+    """Read the one durable record, not a previous window's disposable projection."""
+    start_marker = f"<!-- RPW:RESEARCH_{identity}:START -->"
+    end_marker = f"<!-- RPW:RESEARCH_{identity}:END -->"
+    if start_marker not in text:
+        return {}, None
+    start = text.index(start_marker) + len(start_marker)
+    end = text.find(end_marker, start)
+    if end < 0:
+        raise SystemExit("Incomplete research record: inspect/repair its managed block before updating")
+    body = text[start:end].strip()
+    match = re.search(r"^<!-- RPW:RESEARCH_DATA (.+) -->$", body, re.MULTILINE)
+    if not match:
+        return {}, body  # Keep pre-metadata notes, without inventing their scope.
+    try:
+        entry = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise SystemExit("Invalid research record metadata; repair the record before updating") from exc
+    if not isinstance(entry, dict) or not isinstance(entry.get("scope_snapshot"), dict):
+        raise SystemExit("Research record metadata is missing its scientific scope")
+    return entry, None
 
 
 def sync_baseline_roster_to_window(state: dict[str, Any], roster: dict[str, Any]) -> None:
@@ -2638,6 +2703,7 @@ def sync_baseline_roster_to_window(state: dict[str, Any], roster: dict[str, Any]
                 if finite_number(row.get("baseline_score")) and finite_number(row.get("our_score"))
                 else None
             ),
+            inherit_existing=False,
         )
 
 
@@ -2717,6 +2783,14 @@ def sync_scientific_switch_to_window(
     if not research_window_active(state):
         return
     card_kind = "problem" if kind == "problem_switch" else "method_cluster"
+    window = state["research_window"]
+    for owner, key in (
+        (window, "current_focus"),
+        (window.get("start_snapshot") or {}, "carried_focus"),
+    ):
+        focus = owner.get(key)
+        if focus and (focus.get("kind"), focus.get("subject_id")) != (card_kind, to_id):
+            owner[key] = None
     upsert_research_window_card(
         state,
         layer="L2",
@@ -2742,6 +2816,13 @@ def start_research_window_state(state: dict[str, Any], instruction: Any) -> dict
         )
     instruction_text = clean_text(instruction, "research-window instruction")
     previous = state.get("research_window") or empty_research_window()
+    snapshot = research_window_start_snapshot(state)
+    # A reporting boundary resets deltas, not our understanding of current work.
+    # Carry context only across the same scientific scope; never invent history.
+    previous_focus = previous.get("current_focus") or (previous.get("start_snapshot") or {}).get("carried_focus")
+    if isinstance(previous_focus, dict):
+        if previous_focus.get("scope_snapshot") == research_focus_scope(state):
+            snapshot["carried_focus"] = previous_focus
     sequence = int(previous.get("sequence") or 0) + 1
     state["research_window"] = {
         "sequence": sequence,
@@ -2749,7 +2830,7 @@ def start_research_window_state(state: dict[str, Any], instruction: Any) -> dict
         "status": "ACTIVE",
         "started_at": now_iso(),
         "instruction": instruction_text,
-        "start_snapshot": research_window_start_snapshot(state),
+        "start_snapshot": snapshot,
         "revision": 1,
         "cards": [],
         "current_focus": None,
@@ -2951,7 +3032,6 @@ def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bo
             return False
     if layer == "science":
         refs = state["layer_checkpoints"][layer]["payload"]["evidence_refs"]
-        evidence_hashes: dict[Path, str] = {}
         for name in (
             "problem_portfolio",
             "nearest_work",
@@ -2962,17 +3042,30 @@ def checkpoint_usable(state_path: Path, state: dict[str, Any], layer: str) -> bo
             evidence_path = resolve_stored_path(state_path, ref.get("path"))
             if not evidence_path or not evidence_path.is_file():
                 return False
-            resolved_evidence = evidence_path.resolve()
-            if resolved_evidence != record.resolve() and ref.get(
-                "sha256_at_confirmation"
-            ):
-                if resolved_evidence not in evidence_hashes:
-                    evidence_hashes[resolved_evidence] = sha256_file(evidence_path)
-                if evidence_hashes[resolved_evidence] != ref.get(
-                    "sha256_at_confirmation"
-                ):
-                    return False
     return True
+
+
+def science_evidence_snapshot(
+    state_path: Path, state: dict[str, Any], paper_record: Path | None = None
+) -> dict[str, Any]:
+    """Evidence versions, separate from PI authority over the scientific selection."""
+    science = state["layer_checkpoints"]["science"]
+    refs = (science.get("payload") or {}).get("evidence_refs") or {}
+    paper_record = paper_record or resolve_stored_path(
+        state_path, (state.get("paper_ready_assessment") or {}).get("path")
+    )
+    snapshot = {}
+    for name, ref in refs.items():
+        record = resolve_stored_path(state_path, ref.get("path"))
+        snapshot[name] = {
+            "path": ref.get("path"),
+            "sha256": (
+                "LOCKED_BY_PAPER_REPORT"
+                if record and paper_record and record.resolve() == paper_record.resolve()
+                else sha256_file(record) if record and record.is_file() else None
+            ),
+        }
+    return snapshot
 
 
 def seed_selection_risk_acceptance_usable(
@@ -3021,6 +3114,8 @@ def seed_selection_risk_acceptance_usable(
 def paper_ready_assessment_usable(state_path: Path, state: dict[str, Any]) -> bool:
     assessment = state.get("paper_ready_assessment")
     if not paper_assessment_complete(assessment):
+        return False
+    if assessment.get("science_evidence_at_gate") != science_evidence_snapshot(state_path, state):
         return False
     if assessment.get("payload_sha256_at_gate") != paper_assessment_payload_sha256(
         assessment
@@ -3334,8 +3429,6 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             )
         raw_refs = (science.get("payload") or {}).get("evidence_refs")
         refs = raw_refs if isinstance(raw_refs, dict) else {}
-        science_record = resolve_stored_path(state_path, science.get("record_path"))
-        evidence_hashes: dict[Path, str] = {}
         for name, ref in refs.items():
             if not isinstance(ref, dict):
                 add(
@@ -3351,19 +3444,6 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
                     "P0",
                     f"Science evidence record {name!r} is unavailable",
                 )
-            elif science_record is not None and ref.get("sha256_at_confirmation"):
-                resolved_evidence = evidence_path.resolve()
-                if resolved_evidence != science_record.resolve():
-                    if resolved_evidence not in evidence_hashes:
-                        evidence_hashes[resolved_evidence] = sha256_file(evidence_path)
-                    if evidence_hashes[resolved_evidence] != ref.get(
-                        "sha256_at_confirmation"
-                    ):
-                        add(
-                            "SCIENCE_EVIDENCE_RECORD_CHANGED",
-                            "P0",
-                            f"Science evidence record {name!r} changed after L2 confirmation; reassess and reconfirm the scientific story",
-                        )
     if paper.get("status") == "CONFIRMED_BY_PI" and (
         (paper.get("payload") or {}).get("science_id") != science.get("id")
     ):
@@ -3436,6 +3516,11 @@ def audit_state(state_path: Path, state: dict[str, Any]) -> list[dict[str, str]]
             + ", ".join(stale_artifact_jobs),
         )
     if assessment:
+        if assessment.get("science_evidence_at_gate") != science_evidence_snapshot(state_path, state):
+            add(
+                "PAPER_EVIDENCE_REVIEW_REQUIRED", "P1",
+                "Evidence changed or has no gate snapshot; rebuild the paper report from current evidence. L2 selection remains approved.",
+            )
         assessment_path = resolve_stored_path(state_path, assessment.get("path"))
         expected_payload_sha = assessment.get("payload_sha256_at_gate")
         if not expected_payload_sha:
@@ -3978,6 +4063,20 @@ def window_status_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
         for item in deferred_questions(state)
     ]
     cards = window.get("cards") or []
+    # Refresh generated references on read, even when no roster change happened
+    # in this reporting window. Do not relabel old narrative as a verified win.
+    cards = [
+        {**card, "external_baseline_gap": external_reference_summary(state)}
+        if card.get("research_record") and card.get("layer") == "L2" else card
+        for card in cards
+    ]
+    focus = window.get("current_focus")
+    carried = (window.get("start_snapshot") or {}).get("carried_focus")
+    scope = research_focus_scope(state)
+    if focus is not None and focus.get("scope_snapshot") != scope:
+        focus = None
+    if focus is None and carried and carried.get("scope_snapshot") == scope:
+        focus = {**carried, "context_origin": "carried_forward_not_new_progress"}
     return {
         "schema_version": state.get("schema_version"),
         "project": state.get("project"),
@@ -4000,7 +4099,7 @@ def window_status_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
             "start_snapshot": window.get("start_snapshot"),
             "l1_cards": [card for card in cards if card.get("layer") == "L1"],
             "l2_cards": [card for card in cards if card.get("layer") == "L2"],
-            "current_focus": window.get("current_focus"),
+            "current_focus": focus,
         },
         "current_l1": {
             "id": direction.get("id"),
@@ -4041,6 +4140,8 @@ def window_status_summary(state_path: Path, state: dict[str, Any]) -> dict[str, 
                 "role": row.get("role"),
                 "baseline": row.get("baseline"),
                 "venue_year": row.get("venue_year"),
+                "source": row.get("source"),
+                "search_scope": row.get("search_scope"),
                 "metric": row.get("metric"),
                 "metric_scale": row.get("metric_scale"),
                 "baseline_score": row.get("baseline_score"),
@@ -4313,16 +4414,103 @@ def cmd_window_start(args: argparse.Namespace) -> None:
 def cmd_window_note(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
+    require_execution_active(state, "record active research progress")
     if not research_window_active(state):
         raise SystemExit(
             "No active research window; use window-start after an explicit PI run instruction"
         )
+    record = None
+    durable = args.command == "research-update"
+    incoming_latest = args.latest_result
+    prior = {}
+    legacy_body = None
+    scope = research_focus_scope(state)
+    key = (args.layer, args.kind, args.subject_id)
+    current = state["research_window"].get("current_focus") or (
+        state["research_window"].get("start_snapshot") or {}
+    ).get("carried_focus")
+    current_matches = bool(
+        current and tuple(current.get(name) for name in ("layer", "kind", "subject_id")) == key
+        and current.get("scope_snapshot") == scope
+    )
+    if durable:
+        if args.kind == "baseline_comparison":
+            raise SystemExit("Use baseline-roster for comparison updates; do not maintain a second numeric source")
+        if args.notification is not None and not args.notify_kind:
+            raise SystemExit("--notification requires --notify-kind")
+        if args.notification is not None:
+            args.notification = clean_text(args.notification, "--notification")
+        if args.layer == "L2" and not checkpoint_usable(path, state, "direction"):
+            raise SystemExit("L2 research updates require confirmed L1; discuss/scout first")
+        if state.get("phase") == "paper_handoff_approved":
+            raise SystemExit("Writing is approved; revoke the handoff before restarting research")
+        direction = state["layer_checkpoints"]["direction"] or {}
+        science = state["layer_checkpoints"]["science"] or {}
+        direction_id = direction.get("id")
+        active_record = direction.get("record_path") if args.layer == "L1" else (
+            science.get("record_path")
+            if science.get("status") == "CONFIRMED_BY_PI"
+            and (science.get("payload") or {}).get("direction_id") == direction_id
+            else None
+        )
+        default_record = (
+            research_root_for_state(path) / "L1-directions.md" if args.layer == "L1"
+            else research_root_for_state(path) / "L2" / f"{direction_id}.md"
+        )
+        record, _, _ = normalize_project_record(path, args.record or active_record or str(default_record))
+        if record.suffix.lower() not in {".md", ".markdown"}:
+            raise SystemExit("A research update requires an existing Markdown research record")
+        if args.status == "SELECTED":
+            selected = state["layer_checkpoints"]["direction" if args.layer == "L1" else "science"]
+            selected_id = selected.get("id") if args.layer == "L1" else (selected.get("payload") or {}).get(
+                "problem_id" if args.kind == "problem" else "method_cluster_id"
+            )
+            if selected.get("status") != "CONFIRMED_BY_PI" or selected_id != args.subject_id:
+                raise SystemExit("SELECTED must refer to an actual PI-confirmed choice; use an exploratory status")
+        if args.notify_kind in {"problem_switch", "method_cluster_switch"}:
+            if not args.from_id or args.from_id == args.subject_id:
+                raise SystemExit("A switch needs a distinct --from-id; --subject-id is the new identity")
+            expected_kind = "problem" if args.notify_kind == "problem_switch" else "method_cluster"
+            if args.layer != "L2" or args.kind != expected_kind:
+                raise SystemExit("Switch kind must match the L2 research subject")
+        elif args.from_id:
+            raise SystemExit("--from-id is only valid for a problem or method switch")
+        identity = canonical_payload_sha256(list(key))[:16]
+        text = record.read_text(encoding="utf-8")
+        stored_entry, legacy_body = read_research_entry(text, identity)
+        if stored_entry.get("scope_snapshot") == scope:
+            prior = {name: stored_entry[name] for name in RESEARCH_OPTIONAL_FIELDS if name in stored_entry}
+        # A legacy current-window card has an independently scoped current focus.
+        # Retain its optional fields only when that scope is actually known.
+        elif not stored_entry and current_matches:
+            old_card = next((item for item in state["research_window"]["cards"] if (
+                item.get("layer"), item.get("kind"), item.get("subject_id")
+            ) == key), {})
+            prior = {name: old_card[name] for name in RESEARCH_OPTIONAL_FIELDS if name in old_card}
+            prior.update({name: current[name] for name in ("hypothesis", "current_action")})
+        for name in args.clear_field or []:
+            if name != "comparison_note" and getattr(args, name, None) is not None:
+                raise SystemExit(f"Cannot both set and clear {name}")
+            if name == "comparison_note" and args.external_baseline_gap is not None:
+                raise SystemExit("Cannot both set and clear comparison_note")
+            prior.pop(name, None)
+        for name in RESEARCH_OPTIONAL_FIELDS:
+            if name == "comparison_note":
+                if args.external_baseline_gap is not None:
+                    prior[name] = clean_text(args.external_baseline_gap, "comparison note")
+            elif getattr(args, name, None) is not None:
+                prior[name] = getattr(args, name)
+        for name in RESEARCH_OPTIONAL_FIELDS:
+            if name not in {"hypothesis", "current_action", "comparison_note"}:
+                setattr(args, name, prior.get(name))
+    elif args.record or args.notify_kind or args.notification or args.from_id or args.clear_field:
+        raise SystemExit("Durable record/notification options require research-update, not legacy window-note")
     focus = None
     if args.set_current:
         focus = {
-            "hypothesis": args.hypothesis,
-            "current_action": args.current_action,
-            "latest_result": args.focus_latest_result or args.latest_result or args.verified_observation,
+            "hypothesis": args.hypothesis or prior.get("hypothesis"),
+            "current_action": args.current_action or prior.get("current_action"),
+            "latest_result": args.focus_latest_result or incoming_latest or args.verified_observation,
             "next_action": args.next_action,
         }
     elif any(
@@ -4332,6 +4520,16 @@ def cmd_window_note(args: argparse.Namespace) -> None:
         raise SystemExit(
             "--hypothesis, --current-action, and --focus-latest-result require --set-current"
         )
+    elif durable and current_matches and args.status not in WINDOW_TERMINAL_STATUSES:
+        if prior.get("hypothesis") and prior.get("current_action"):
+            focus = {
+                "hypothesis": prior["hypothesis"], "current_action": prior["current_action"],
+                "latest_result": incoming_latest or args.verified_observation,
+                "next_action": args.next_action,
+            }
+        else:
+            state["research_window"]["current_focus"] = None
+            (state["research_window"].get("start_snapshot") or {}).pop("carried_focus", None)
     card = upsert_research_window_card(
         state,
         layer=args.layer,
@@ -4341,7 +4539,10 @@ def cmd_window_note(args: argparse.Namespace) -> None:
         status=args.status,
         verified_observation=args.verified_observation,
         interpretation=args.interpretation,
-        external_baseline_gap=args.external_baseline_gap,
+        external_baseline_gap=(
+            external_reference_summary(state) if durable and args.layer == "L2"
+            else args.external_baseline_gap or "See the dataset baseline roster; comparison not yet recorded here."
+        ),
         next_action=args.next_action,
         starting_result=args.starting_result,
         best_result=args.best_result,
@@ -4349,11 +4550,63 @@ def cmd_window_note(args: argparse.Namespace) -> None:
         disposition_reason=args.disposition_reason,
         problem_path=args.problem_path,
         focus=focus,
+        inherit_existing=not durable,
     )
+    if durable:
+        # One input yields a durable note, reporting projection and notification.
+        # It never confirms a PI selection or changes a verified comparison score.
+        if args.notify_kind:
+            transition = (
+                {"from_id": args.from_id, "to_id": args.subject_id}
+                if args.notify_kind in {"problem_switch", "method_cluster_switch"} else {}
+            )
+            saved_card, saved_focus = dict(card), state["research_window"].get("current_focus")
+            append_notification(state, args.notification or args.interpretation, args.notify_kind, **transition)
+            card.clear()
+            card.update(saved_card)
+            if focus is not None:
+                state["research_window"]["current_focus"] = saved_focus
+        card.update({
+            "scope_snapshot": scope, "research_record": str(record),
+            **{name: prior[name] for name in ("hypothesis", "current_action", "comparison_note") if name in prior},
+        })
+        if focus:
+            card.update({name: focus[name] for name in ("hypothesis", "current_action")})
+        # The readable body and this recovery payload are generated together in
+        # the existing note. No separate history/cache becomes authoritative.
+        entry = {**card, "external_baseline_gap": "See the canonical dataset_baseline_roster/current_external_baselines; compare external first."}
+        metadata = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e")
+        body = "\n".join([
+            f"### {card['title']} ({card['subject_id']})",
+            f"Status: {card['status']} | Updated: {card['updated_at']}",
+            f"Observation: {card['verified_observation']}",
+            f"Interpretation: {card['interpretation']}",
+            f"External comparison: {entry['external_baseline_gap']}",
+            *[f"{name}: {card[name]}" for name in ("starting_result", "best_result", "latest_result", "disposition_reason", "problem_path") if name in card],
+            f"Next: {card['next_action']}",
+            *[f"{label}: {card[name]}" for name, label in (
+                ("hypothesis", "Hypothesis"), ("current_action", "Current test"),
+                ("comparison_note", "Additional comparison note"),
+            ) if card.get(name)],
+            "This is evolving research evidence, not PI approval.",
+            f"<!-- RPW:RESEARCH_DATA {metadata} -->",
+        ])
+        if legacy_body is not None:
+            text = text.replace(f"RPW:RESEARCH_{identity}:", f"RPW:LEGACY_RESEARCH_{identity}:")
+            text = text.replace(f"## RPW research {identity}", f"## Legacy research {identity}")
+            text += "\nLegacy research summary above is retained for review, not automatically revalidated.\n"
+        atomic_write_text(record, replace_managed_section(text, f"RESEARCH_{identity}", body, f"## RPW research {identity}"))
+        if state.get("paper_ready_assessment"):
+            archive_invalidated_paper_assessment(state, "research_evidence_update", args.subject_id)
+            state["phase"] = "confirmed_project"
     save_state(path, state)
     print(
         json.dumps(
-            {"updated_card": card, "window": window_status_summary(path, state)},
+            {
+                "updated_card": card,
+                "record_path": str(record),
+                "window_id": state["research_window"]["id"],
+            } if durable else {"updated_card": card, "window": window_status_summary(path, state)},
             ensure_ascii=False,
             indent=2,
         )
@@ -5494,21 +5747,8 @@ def checkpoint_payload(
                 "--contribution-type must name a paper-grade scientific contribution: "
                 + ", ".join(sorted(PAPER_GRADE_CONTRIBUTION_TYPES))
             )
-        normalized_core = required["core_mechanism"].casefold()
-        engineering_pattern = next(
-            (
-                pattern
-                for pattern in sorted(ENGINEERING_ONLY_CORE_PATTERNS)
-                if pattern.casefold() in normalized_core
-            ),
-            None,
-        )
-        if engineering_pattern is not None:
-            raise SystemExit(
-                "L2 core mechanism is engineering-only "
-                f"({engineering_pattern!r}). Keep it in L3 or as a baseline; "
-                "confirm a paper-grade scientific mechanism instead."
-            )
+        # Scientific adequacy depends on the nearest alternative and evidence,
+        # not substrings in a mechanism description (including negated examples).
         if required["direction_id"] != direction.get("id"):
             raise SystemExit("--direction-id must match the active confirmed direction")
         anchor = state.get("evaluation_anchor") or {}
@@ -5671,6 +5911,46 @@ def invalidate_evaluation_anchor(
     state["seed_selection_risk_acceptance"] = None
 
 
+def record_baseline_roster(
+    path: Path, state: dict[str, Any], rows: list[dict[str, Any]],
+    record: Path, stored: str, reason: str,
+) -> None:
+    """Write one numeric authority and its existing receipt/history projections."""
+    direction = state["layer_checkpoints"]["direction"]
+    current = state.get("dataset_baseline_roster")
+    revision = int((current or {}).get("revision") or 0) + 1
+    roster = {
+        "direction_id": direction.get("id"),
+        "revision": revision,
+        "rows": rows,
+        "reason": reason,
+        "recorded_at": now_iso(),
+        "record_path": stored,
+        "record_kind": "baseline_roster_receipt",
+    }
+    roster["payload_sha256"] = baseline_roster_payload_sha256(roster)
+    if isinstance(current, dict):
+        state.setdefault("dataset_baseline_roster_history", []).append(
+            {
+                **current,
+                "replaced_at": now_iso(),
+                "replacement_revision": revision,
+                "replacement_reason": reason,
+            }
+        )
+    append_baseline_roster_receipt(record, roster, reason)
+    roster["record_sha256_at_receipt"] = sha256_file(record)
+    state["dataset_baseline_roster"] = roster
+    sync_baseline_roster_to_window(state, roster)
+    archive_invalidated_paper_assessment(
+        state, "dataset_baseline_roster_change", f"baseline-roster-r{revision}"
+    )
+    invalidate_checkpoint(
+        path, state, "paper", "baseline_roster_change", f"baseline-roster-r{revision}"
+    )
+    state["phase"] = "confirmed_project"
+
+
 def cmd_baseline_roster(args: argparse.Namespace) -> None:
     path = Path(args.state)
     state = load_state(path)
@@ -5704,37 +5984,7 @@ def cmd_baseline_roster(args: argparse.Namespace) -> None:
         and current.get("rows") == rows
     ):
         raise SystemExit("Dataset baseline roster is already set to these values")
-    revision = int((current or {}).get("revision") or 0) + 1
-    roster = {
-        "direction_id": direction.get("id"),
-        "revision": revision,
-        "rows": rows,
-        "reason": reason,
-        "recorded_at": now_iso(),
-        "record_path": stored,
-        "record_kind": "baseline_roster_receipt",
-    }
-    roster["payload_sha256"] = baseline_roster_payload_sha256(roster)
-    if isinstance(current, dict):
-        state.setdefault("dataset_baseline_roster_history", []).append(
-            {
-                **current,
-                "replaced_at": now_iso(),
-                "replacement_revision": revision,
-                "replacement_reason": reason,
-            }
-        )
-    append_baseline_roster_receipt(record, roster, reason)
-    roster["record_sha256_at_receipt"] = sha256_file(record)
-    state["dataset_baseline_roster"] = roster
-    sync_baseline_roster_to_window(state, roster)
-    archive_invalidated_paper_assessment(
-        state, "dataset_baseline_roster_change", f"baseline-roster-r{revision}"
-    )
-    invalidate_checkpoint(
-        path, state, "paper", "baseline_roster_change", f"baseline-roster-r{revision}"
-    )
-    state["phase"] = "confirmed_project"
+    record_baseline_roster(path, state, rows, record, stored, reason)
     save_state(path, state)
     print(json.dumps(state_summary(path, state), ensure_ascii=False, indent=2))
 
@@ -5926,6 +6176,26 @@ def cmd_evaluation_anchor(args: argparse.Namespace) -> None:
         "reason": reason,
         "legacy_derived": False,
     }
+    scope_changed = isinstance(current, dict) and any(
+        current.get(key) != value for key, value in identity.items()
+    )
+    roster = state["dataset_baseline_roster"]
+    if scope_changed and any(row.get("our_score") is not None for row in roster["rows"]):
+        # Keep the external target, not a previous mechanism's current score.
+        # Existing history retains the old comparison; a rerun or explicit
+        # reassessment may register a score with baseline-roster again.
+        rows = [dict(row) for row in roster["rows"]]
+        for row in rows:
+            if row.get("our_score") is not None:
+                row["our_score"] = None
+                if row["status"] == "MATCHED":
+                    row["status"] = "IDENTIFIED"
+        record, stored, _ = normalize_project_record(path, roster["record_path"])
+        record_baseline_roster(
+            path, state, rows, record, stored,
+            "Evaluation scope changed: external references retained; previous our_score "
+            "requires rerun or explicit reassessment before use with the new anchor. " + reason,
+        )
     if research_window_active(state):
         state["research_window"]["revision"] = int(
             state["research_window"].get("revision") or 0
@@ -6070,14 +6340,14 @@ def cmd_confirm(args: argparse.Namespace) -> None:
                     "problem_path_change",
                 )
         if science_method_changed:
+            old_method = (previous.get("payload") or {}).get("method_cluster_id")
+            new_method = payload.get("method_cluster_id")
+            transition = {"from_id": old_method, "to_id": new_method} if old_method != new_method else {}
             append_notification(
                 state,
-                "L2 核心方法簇已更换："
-                f"`{(previous.get('payload') or {}).get('method_cluster_id')}` → "
-                f"`{payload.get('method_cluster_id')}`。{payload.get('change_notification')}",
-                "method_cluster_switch",
-                from_id=(previous.get("payload") or {}).get("method_cluster_id"),
-                to_id=payload.get("method_cluster_id"),
+                f"L2 已确认的方法说明已更新：{payload.get('change_notification')}",
+                "method_cluster_switch" if transition else "general",
+                **transition,
             )
         state["phase"] = "confirmed_project"
     elif args.layer == "paper":
@@ -6245,6 +6515,7 @@ def cmd_phase(args: argparse.Namespace) -> None:
             "evaluation_anchor_revision": anchor["revision"],
             "metric_direction": anchor["metric_direction"],
             "favorable_seed_selection": bool(args.favorable_seed_selection),
+            "science_evidence_at_gate": science_evidence_snapshot(path, state, record),
             **assessment_text,
             "dataset_baseline_matrix": dataset_baseline_matrix,
             "metric_scale": args.metric_scale,
@@ -6575,8 +6846,9 @@ def build_parser() -> argparse.ArgumentParser:
     window_start_parser.set_defaults(func=cmd_window_start)
 
     window_note_parser = subparsers.add_parser(
-        "window-note",
-        help="Upsert one macro L1/L2 attempt card in the current reporting window",
+        "research-update",
+        aliases=["window-note"],
+        help="Update a durable research note and its progress view (window-note is projection-only)",
     )
     window_note_parser.add_argument("state")
     window_note_parser.add_argument("--layer", required=True, choices=sorted(WINDOW_CARD_KINDS_BY_LAYER))
@@ -6588,9 +6860,15 @@ def build_parser() -> argparse.ArgumentParser:
     window_note_parser.add_argument("--subject-id", required=True)
     window_note_parser.add_argument("--title", required=True)
     window_note_parser.add_argument("--status", required=True, choices=sorted(WINDOW_CARD_STATUSES))
-    window_note_parser.add_argument("--verified-observation", required=True)
+    window_note_parser.add_argument("--verified-observation", "--observation", required=True)
     window_note_parser.add_argument("--interpretation", required=True)
-    window_note_parser.add_argument("--external-baseline-gap", required=True)
+    window_note_parser.add_argument("--external-baseline-gap", help="Additional comparison note; research-update still uses the external roster as its reference")
+    window_note_parser.add_argument("--clear-field", action="append", choices=RESEARCH_OPTIONAL_FIELDS,
+                                    help="research-update: explicitly clear an invalid/superseded optional field")
+    window_note_parser.add_argument("--record", help="research-update: existing project-local L1/L2 record; defaults to the active layer record")
+    window_note_parser.add_argument("--notify-kind", choices=sorted(WINDOW_MACRO_NOTIFICATION_KINDS))
+    window_note_parser.add_argument("--notification", help="Optional notification; defaults to interpretation")
+    window_note_parser.add_argument("--from-id", help="Previous identity when notifying a problem/method switch")
     window_note_parser.add_argument("--next-action", required=True)
     window_note_parser.add_argument("--starting-result")
     window_note_parser.add_argument("--best-result")
@@ -6984,7 +7262,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_parser.add_argument("--paper-grade-rationale")
     confirm_parser.add_argument("--core-mechanism")
     confirm_parser.add_argument("--falsifiable-prediction")
-    confirm_parser.add_argument("--simple-combination-counterfactual")
+    confirm_parser.add_argument("--alternative-explanation", "--simple-combination-counterfactual", dest="simple_combination_counterfactual", help="Why the nearest relevant simpler alternative does not explain/solve the problem; legacy field retained")
     confirm_parser.add_argument(
         "--contribution-type", choices=sorted(PAPER_GRADE_CONTRIBUTION_TYPES)
     )
